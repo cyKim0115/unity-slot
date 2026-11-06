@@ -18,6 +18,11 @@ Set-StrictMode -Version 2.0
 
 $script:Root = Split-Path -Parent $PSScriptRoot
 $script:Cli = Join-Path $script:Root 'unity-slot.ps1'
+$script:ServerVersion = '0.0.0'
+try {
+    $vm = [regex]::Match([IO.File]::ReadAllText($script:Cli), '\$script:UnitySlotVersion = ''([^'']+)''')
+    if ($vm.Success) { $script:ServerVersion = $vm.Groups[1].Value }
+} catch { }
 $script:PowerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 $script:Owner = ''
@@ -59,8 +64,11 @@ function New-Prop([string]$Type, [string]$Description) { return [ordered]@{ type
 $script:Tools = @(
     (New-Tool 'status' ('Unity slots on this PC: project, platform, branch, purposes, hot/ondemand, whether agents may use it, ' +
             'editor state (open pid or closed) and leases. processes=true shows the editor process view instead ' +
-            '(import workers, other child processes, memory).') ([ordered]@{
+            '(import workers, other child processes, memory). dashboard=true returns the full read-only dashboard ' +
+            'document (editor state starting/ready/stalled, memory, lease, git, recent events, warning flags).') ([ordered]@{
             processes = (New-Prop 'boolean' 'Show editor processes and memory instead of the slot registry.')
+            dashboard = (New-Prop 'boolean' 'Return the dashboard document (schema unity-slot.dashboard/1).')
+            git       = (New-Prop 'string' 'With dashboard: basic (default, each slot''s git status) or full (also local-only commits, branches, stash, worktrees).')
         }) @()),
     (New-Tool 'acquire' ('Lease a free slot that fits a purpose or platform (for example agent, webgl, windows, android) ' +
             'and start its editor without waiting. Then call wait_ready until READY, check through the Unity MCP that ' +
@@ -139,6 +147,8 @@ function Invoke-UnitySlot([string[]]$CliArgs) {
     $psi.RedirectStandardError = $true
     $psi.StandardOutputEncoding = $script:Utf8
     $psi.StandardErrorEncoding = $script:Utf8
+    # events.jsonl records which way a command came ("via": "mcp")
+    $psi.EnvironmentVariables['UNITY_SLOT_VIA'] = 'mcp'
     $p = [Diagnostics.Process]::Start($psi)
     $p.StandardInput.Close()
     $outTask = $p.StandardOutput.ReadToEndAsync()
@@ -188,6 +198,11 @@ function Invoke-UnityCliClose([string]$SlotOrPath, [int]$Timeout) {
 function Invoke-Tool([string]$Name, $A) {
     switch ($Name) {
         'status' {
+            if (Get-Arg $A 'dashboard' $false) {
+                $level = 'basic'
+                if ([string](Get-Arg $A 'git' 'basic') -eq 'full') { $level = 'full' }
+                return Invoke-UnitySlot @('dashboard', '-Json', '-Git', $level)
+            }
             if (Get-Arg $A 'processes' $false) { return Invoke-UnitySlot @('status', '-Json') }
             return Invoke-UnitySlot @('slots', '-Json')
         }
@@ -275,7 +290,7 @@ while ($true) {
                 Send-Result $id ([ordered]@{
                         protocolVersion = $version
                         capabilities    = [ordered]@{ tools = [ordered]@{ listChanged = $false } }
-                        serverInfo      = [ordered]@{ name = 'unity-slot'; version = '0.3.0' }
+                        serverInfo      = [ordered]@{ name = 'unity-slot'; version = $script:ServerVersion }
                         instructions    = ('Unity editors on this PC are slots. To work in one: acquire(purpose, project) -> ' +
                             'wait_ready until READY -> check Application.dataPath through the Unity MCP -> work -> release(slot). ' +
                             'Do not switch platforms, do not take slots leased by others, never force anything; hand stalls to the user.')

@@ -16,6 +16,7 @@ Open and close Unity editors for clone folders on demand, and show what is open.
   unity-slot.ps1 new-clone <purpose|platform> [-Project <repo>] [-From <slot>] [-Name <folder>]
                            [-CloneRoot <dir>] [-NoOpen] [-Apply]
   unity-slot.ps1 hooks     [<slot|clone> -HookEvent <event>]
+  unity-slot.ps1 dashboard -Json [-Git basic|full]
   unity-slot.ps1 <extra command from the config> ...
   Any command: [-NoHooks] [-SkipHook <name>[,...]]
 
@@ -39,6 +40,12 @@ renew     Extends a lease.
 new-clone Plans (dry run) or, with -Apply, makes a new clone slot (lib\newclone.ps1).
 hooks     Shows the config file, the hooks per event and the extra commands; with a slot and
           -HookEvent it runs that event's hooks for the slot now (lib\config.ps1).
+dashboard One read-only JSON document for widgets and agents (schema unity-slot.dashboard/1):
+          slots with editor state, memory, lease and git, plus system, events and flags. Only the
+          JSON goes to stdout; -Git full adds branch-level git numbers (lib\dashboard.ps1).
+
+Every run refreshes <slot home>\install.json (where this script is, its version) and open, ready,
+close, acquire, release, renew, takeover and refusals go to <slot home>\events.jsonl.
 
 Settings (editor roots, scan roots, clone root, purposes, timeouts), hooks and extra commands come
 from config.json next to this script or in %USERPROFILE%\.unity-slot (config.example.json).
@@ -118,19 +125,26 @@ param(
     # hooks: the event to run now for one slot
     [string]$HookEvent,
 
+    # dashboard: basic = each slot's git status; full = also local-only commits, branches, stash, worktrees
+    [Alias('Git')]
+    [ValidateSet('basic', 'full')]
+    [string]$GitLevel = 'basic',
+
     # scan, new-clone (and some extra commands): without it they only show what they would do
     [switch]$Apply
 )
 
+$script:UnitySlotVersion = '0.4.0'
 $script:ExitCode = 0
 $script:LastOpenPid = 0
 $script:PendingHooksFailed = $false
+$script:LastCloseDetail = $null
 $script:Bound = $PSBoundParameters
 $script:Inv = [Globalization.CultureInfo]::InvariantCulture
 $script:SecretFlags = 'accessToken|hubSessionId|cbmEditorLicense|cbmMachineId'
 
 $script:SlotRepo = $PSScriptRoot
-foreach ($lib in @('config', 'registry', 'lease', 'newclone')) { . (Join-Path $PSScriptRoot ('lib\' + $lib + '.ps1')) }
+foreach ($lib in @('config', 'registry', 'lease', 'newclone', 'dashboard')) { . (Join-Path $PSScriptRoot ('lib\' + $lib + '.ps1')) }
 
 # ------------------------------------------------------------------ output and masking
 
@@ -390,10 +404,10 @@ function Get-CommitInfo {
     $limit = [double]$os.TotalVirtualMemorySize * 1KB
     $used = $limit - [double]$os.FreeVirtualMemory * 1KB
     return [pscustomobject]@{
-        UsedGB         = [math]::Round($used / 1GB, 1)
-        LimitGB        = [math]::Round($limit / 1GB, 1)
+        UsedGB         = [math]::Round($used / 1GB, 2)
+        LimitGB        = [math]::Round($limit / 1GB, 2)
         Percent        = [math]::Round(100 * $used / $limit, 0)
-        FreePhysicalGB = [math]::Round([double]$os.FreePhysicalMemory * 1KB / 1GB, 1)
+        FreePhysicalGB = [math]::Round([double]$os.FreePhysicalMemory * 1KB / 1GB, 2)
     }
 }
 
@@ -414,11 +428,12 @@ function Get-LockState([string]$Clone) {
     }
 }
 
+# --no-optional-locks: reading never takes the index lock an agent's git command may need.
 function Invoke-Git([string]$Clone, [string[]]$GitArgs) {
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & git -C $Clone -c core.quotepath=false @GitArgs 2>$null
+        & git --no-optional-locks -C $Clone -c core.quotepath=false @GitArgs 2>$null
     } finally {
         $ErrorActionPreference = $prev
     }
@@ -481,6 +496,7 @@ function Read-OpenSnapshot([string]$Clone, [int]$EditorPid) {
             $time = [datetime]::Parse($line.Substring(5), $script:Inv, [Globalization.DateTimeStyles]::RoundtripKind)
             continue
         }
+        if ($line -match '^[A-Za-z]+=') { continue }   # ready=, readySeconds= (lib\dashboard.ps1)
         if ($line.Length -ge 4) { $changes[$line.Substring(3)] = $line.Substring(0, 2) }
     }
     if ($snapPid -ne $EditorPid -or $null -eq $time) { return $null }
@@ -686,6 +702,7 @@ function Invoke-Open([string]$ClonePath, [int]$Timeout = 0, [string]$BuildTarget
     $batch = @($open | Where-Object { $_.Kind -eq 'batch' })
     if ($batch.Count -gt 0) {
         Say ('BUSY: batchmode Unity pid {0} is using this clone. Wait until it quits.' -f (($batch | ForEach-Object { $_.Pid }) -join ', '))
+        Write-SlotEvent 'refused' $clone $batch[0].Pid ([ordered]@{ command = 'open'; reason = 'batchmode run' })
         $script:ExitCode = 4
         return
     }
@@ -704,6 +721,7 @@ function Invoke-Open([string]$ClonePath, [int]$Timeout = 0, [string]$BuildTarget
         $current = Get-PlatformFromLibrary $clone
         if ($current -and $current -ne $wanted) {
             Say ('REFUSED: this clone opens as {0}. -BuildTarget {1} would switch the platform and reimport everything. Use a {1} slot or ask the user.' -f $current, $wanted)
+            Write-SlotEvent 'refused' $clone 0 ([ordered]@{ command = 'open'; reason = 'platform switch'; platform = $current; wanted = $wanted })
             $script:ExitCode = 4
             return
         }
@@ -712,6 +730,7 @@ function Invoke-Open([string]$ClonePath, [int]$Timeout = 0, [string]$BuildTarget
     $lock = Get-LockState $clone
     if ($lock -eq 'held') {
         Say 'STOP: Temp\UnityLockfile is held, but no Unity.exe has this clone as -projectPath. Not opening; check Task Manager.'
+        Write-SlotEvent 'refused' $clone 0 ([ordered]@{ command = 'open'; reason = 'lock held' })
         $script:ExitCode = 4
         return
     }
@@ -752,6 +771,7 @@ function Invoke-Open([string]$ClonePath, [int]$Timeout = 0, [string]$BuildTarget
     Say ('started pid {0} at {1}: {2}' -f $editorPid, (Format-Time $t0), (Protect-Text $cmdLine))
     try { Save-OpenSnapshot $clone $editorPid $t0 $git }
     catch { Say ('note    could not save Logs\unity-slot-open.txt ({0}); close will only compare the close itself' -f $_.Exception.Message) }
+    Write-SlotEvent 'open' $clone $editorPid ([ordered]@{ standby = $standby; buildTarget = $(if ($targetArg) { $targetArg } else { $null }) })
 
     if ($NoWaitMode) {
         Say ('STARTED pid {0}; not waiting here. Run "unity-slot wait {1}" until it says READY (12 s to a few minutes).' -f $editorPid, $clone)
@@ -826,6 +846,10 @@ function Wait-EditorReady([string]$Clone, [int]$EditorPid, [string]$Log, [dateti
         Say ('READY pid {0} {1}s after start ([Project] Loading completed; no ##utp ProjectInfo line)' -f $EditorPid, (Format-Num $wall))
     }
     $script:LastOpenPid = $EditorPid
+    # the first READY of an editor unity-slot started: kept next to its open snapshot, logged once
+    if (Add-OpenSnapshotReady $Clone $EditorPid $readyAt $wall) {
+        Write-SlotEvent 'ready' $Clone $EditorPid ([ordered]@{ readySeconds = [math]::Round($wall, 1) })
+    }
     $tree = Get-EditorTree (Get-Snapshot) $EditorPid
     Say ('now     {0} import worker(s), {1} other child process(es); editor tree private {2} GB / ws {3} GB' -f `
         $tree.WorkerCount, $tree.OtherCount, (Format-GB $tree.TotalPriv), (Format-GB $tree.TotalWs))
@@ -899,6 +923,7 @@ function Invoke-Close([string]$ClonePath) {
     $batch = @($open | Where-Object { $_.Kind -eq 'batch' })
     if ($batch.Count -gt 0) {
         Say ('REFUSED: batchmode Unity pid {0} is working on this clone. It quits by itself; not touching it.' -f (($batch | ForEach-Object { $_.Pid }) -join ', '))
+        Write-SlotEvent 'refused' $clone $batch[0].Pid ([ordered]@{ command = 'close'; reason = 'batchmode run' })
         $script:ExitCode = 4
         return
     }
@@ -914,6 +939,7 @@ function Invoke-Close([string]$ClonePath) {
             }
             Say ('REFUSED: beforeClose hook {0} says not to close now (see above). Save or discard first, or ask the user.' -f ($check.Refused -join ', '))
             Say '         -AllowDirty sends the close anyway; Unity then shows its save dialog and stays open.'
+            Write-SlotEvent 'refused' $clone $e.Pid ([ordered]@{ command = 'close'; reason = 'beforeClose'; hooks = [string[]]@($check.Refused) })
             $script:ExitCode = 4
             return
         }
@@ -949,7 +975,8 @@ function Invoke-Close([string]$ClonePath) {
         $script:ExitCode = 2
         return
     }
-    Say ('CLOSED after {0}s' -f (Format-Num ((Get-Date) - $t0).TotalSeconds))
+    $closeSeconds = ((Get-Date) - $t0).TotalSeconds
+    Say ('CLOSED after {0}s' -f (Format-Num $closeSeconds))
 
     # Import workers, the compiler server and MCP servers normally follow within seconds.
     $until = (Get-Date).AddSeconds(30)
@@ -993,6 +1020,13 @@ function Invoke-Close([string]$ClonePath) {
     if ($written.Count -gt 0 -or $since.Count -gt 0) { Say 'git     reported only; review before committing. unity-slot never reverts files.' }
     $commitAfter = Get-CommitInfo
     Say ('commit  {0}; change {1} GB' -f (Format-Commit $commitAfter), (Format-Num ($commitAfter.UsedGB - $commitBefore.UsedGB)))
+    $paths = @(@($written) + @($since) | ForEach-Object { ([string]$_).Substring(3) } | Select-Object -Unique)
+    $script:LastCloseDetail = [ordered]@{
+        closeSeconds  = [math]::Round($closeSeconds, 1)
+        commitDeltaGB = [math]::Round($commitAfter.UsedGB - $commitBefore.UsedGB, 2)
+        changedFiles  = $paths.Count
+    }
+    Write-SlotEvent 'close' $clone $open[0].Pid $script:LastCloseDetail
     $null = Invoke-SlotHooks 'afterClose' (Get-HookVars $clone $open[0].Pid)
 }
 
@@ -1074,6 +1108,7 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
 $prevEncoding = $null
 try {
@@ -1083,7 +1118,9 @@ try {
     $prevEncoding = $null
 }
 try {
+    Update-InstallPointer
     switch ($Command) {
+        'dashboard' { Invoke-Dashboard }
         'open' { Invoke-Open (Resolve-TargetPath $Target) $TimeoutSec $BuildTarget $NoWait.IsPresent }
         'wait' { Invoke-Wait (Resolve-TargetPath $Target) $TimeoutSec }
         'close' { Invoke-Close (Resolve-TargetPath $Target) }
@@ -1107,7 +1144,9 @@ try {
         }
     }
 } catch {
-    Say ('ERROR: ' + (Protect-Text $_.Exception.Message))
+    # dashboard keeps stdout for its JSON only
+    if ($Command -eq 'dashboard') { [Console]::Error.WriteLine('ERROR: ' + (Protect-Text $_.Exception.Message)) }
+    else { Say ('ERROR: ' + (Protect-Text $_.Exception.Message)) }
     $script:ExitCode = 1
 } finally {
     if ($null -ne $prevEncoding) { try { [Console]::OutputEncoding = $prevEncoding } catch { } }

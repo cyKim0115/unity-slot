@@ -64,6 +64,7 @@ cmd나 Git Bash에서는 `unity-slot.cmd <명령> ...`으로 쓰세요.
 | `renew <슬롯> [-Owner <id>] [-Hours 8]` | 임대를 늘립니다. |
 | `new-clone <용도\|플랫폼> [-Project <repo>] [-From <슬롯>] [-Name <폴더>] [-CloneRoot <폴더>] [-NoOpen] [-Apply]` | 새 클론 계획(dry-run)을 보여 줍니다. `-Apply`면 만듭니다. [새 클론](#새-클론) 참고. |
 | `hooks [<슬롯> -HookEvent <이벤트>]` | 쓰는 설정 파일, 이벤트별 훅, 추가 명령을 보여 줍니다. 슬롯과 `-HookEvent`를 주면 그 이벤트의 훅을 지금 돌립니다. |
+| `dashboard -Json [-Git basic\|full]` | 위젯·에이전트용 읽기 전용 JSON 문서 하나를 냅니다. [대시보드 JSON](#대시보드-json) 참고. |
 | `<추가 명령>` | 설정에서 더한 명령([추가 명령](#추가-명령)). |
 
 모든 명령에 쓰는 옵션: `-NoHooks`(훅 모두 건너뜀), `-SkipHook a,b`(이름으로 건너뜀), `-TimeoutSec`, `-StandbyWorkers`, `-EditorRoot`, `-Python`.
@@ -87,6 +88,8 @@ cmd나 Git Bash에서는 `unity-slot.cmd <명령> ...`으로 쓰세요.
 | `timeouts` | open 300, close 240, wait 45, stalled 300, firstOpen 2400, firstOpenWithLibrary 900, hook 120 | 초. |
 | `purposeRules` | 아래 | scan이 잡는 용도 초안. |
 | `platformAliases` | 없음 | 플랫폼 별칭. 예: `{ "mobile": "Android" }` |
+| `sceneBeacon` | 없음 | 프로젝트의 에디터 스크립트가 갱신하는 클론 기준 JSON 파일([형식](examples/hooks/scene-beacon.ps1)). 대시보드가 미저장 씬을 여기서 읽습니다. |
+| `dashboard` | commitHighPercent 85, commitCriticalPercent 90, leaseExpiringMinutes 30, localOnlyOldDays 14, recentEvents 20 | 대시보드 경고 표시의 기준값. |
 | `hooks` | 없음 | 이벤트별 프로그램(다음 절). |
 | `commands` | 없음 | 추가 명령. |
 
@@ -160,7 +163,7 @@ cmd나 Git Bash에서는 `unity-slot.cmd <명령> ...`으로 쓰세요.
 
 | 도구 | 하는 일 |
 |---|---|
-| `status` | 등록부 JSON을 돌려줍니다. `processes=true`면 에디터 프로세스와 메모리도 돌려줍니다. |
+| `status` | 등록부 JSON을 돌려줍니다. `processes=true`면 에디터 프로세스와 메모리를, `dashboard=true`(`git=basic\|full`)면 [대시보드 문서](#대시보드-json)를 돌려줍니다. |
 | `acquire` | 용도로 빈 슬롯을 임대하고 에디터를 띄운 뒤 기다리지 않고 돌아옵니다. |
 | `open` | 슬롯의 에디터를 띄우고 바로 돌아옵니다. |
 | `wait_ready` | 호출마다 최대 55초 기다립니다. READY, STARTING(다시 부름), STALLED, NOT RUNNING. |
@@ -194,6 +197,22 @@ tool_timeout_sec = 300
 도구에 MCP annotations가 없어서 클라이언트가 호출마다 승인을 물을 수 있습니다. 비대화형 실행(예: `codex exec`)에서는 클라이언트 승인 설정에서 이 서버의 도구를 허용하세요.
 
 에이전트 규칙은 이 정도로 짧아도 됩니다: 「Unity 작업은 슬롯을 acquire(용도, 프로젝트)하고, READY까지 wait_ready를 부르고, Unity MCP로 `Application.dataPath`가 그 슬롯인지 확인한 뒤 일하고, 끝나면 release하세요. 플랫폼을 바꾸지 말고, 남이 임대한 슬롯을 잡지 말고, 멈추면 사용자에게 넘기세요.」
+
+## 대시보드 JSON
+
+`unity-slot dashboard -Json [-Git basic|full]`은 stdout에 JSON 문서 하나만(한 줄, UTF-8) 쓰고 exit 0으로 끝납니다. 오류면 stdout은 비우고 stderr에 메시지를 쓰고 exit 1입니다. 읽기 전용입니다: 프로세스 조회 한 번, git은 `--no-optional-locks`, 훅 없음, 출력에 명령줄 없음. 시험한 기기에서 PowerShell 시작까지 합쳐 `basic` 약 1.7초, `full` 약 2.2초 걸렸습니다.
+
+- **맨 위:** `schema`(`unity-slot.dashboard/1`, 주 번호가 바뀌면 호환되지 않음), `version`, `time`, `host`, `registry`(`path`, `updatedAt`, `maxEditors`), `system`(`commit`의 `usedGB`/`limitGB`/`percent`, `freePhysicalGB`, `editorsOpen`), `slots`, `unregisteredEditors`, `orphanWorkers`, `recentEvents`, `systemFlags`, `timing`(`totalMs`, `processMs`, `gitMs`). 시각은 로컬 오프셋이 붙은 ISO 8601, 크기는 소수 둘째 자리 GB, 없는 값은 `null`입니다.
+- **슬롯마다:** 등록부 칸(`name`, `path`, `project`, `repo`, `kind`, `unity`, `platform`, `purposes`, `mode`, `agentUse`, `memo`), `exists`, `editor`, `lease`, `git`, `lastOpenedAt`, `lastClosedAt`, `flags`.
+- **`editor.state`:** `closed`, `starting`, `ready`, `stalled`(`timeouts.stalled`가 지나도 준비 안 됨), `unknown`(읽을 클론 로그가 없음, 예: Hub가 띄운 에디터), `batch`, `missing`. 에디터가 있으면 `pid`, `startedAt`, `readyAt`, `readySeconds`, `launch`(`hub`/`direct`), `standby`, `lock`, `unsavedScene`(`sceneBeacon`), `memory`(`editorPrivGB`, `workersPrivGB`, `childrenPrivGB`, `totalPrivGB`, `totalWsGB`, `workers`, `children`).
+- **`lease`:** `owner`, `need`, `acquiredAt`, `expiresAt`, `expired`, `openedByAcquire`, `host`, 없으면 `null`.
+- **`git`:** `level`, `branch`, `upstream`, `upstreamGone`, `changes`, `ahead`, `behind`, `lastFetchAt`, `commonDir`, `error`. `full`이면 `localOnly`(원격 추적 참조 어디에도 없는 로컬 브랜치 커밋 `commits`와 `oldestAt`), `branches`(`total`, `noUpstream`, `upstreamGone`), `stash`, `worktrees`(같은 저장소의 다른 작업 폴더)도 냅니다. git 디렉터리를 같이 쓰는 슬롯은 한 번만 셉니다. fetch는 하지 않습니다.
+- **`flags`:** `open-without-lease`(임대 없이 열린 온디맨드 슬롯), `lease-expired-open`, `lease-expiring`, `stalled`, `unsaved-scene`, `stale-lock`(닫혔는데 `Temp\UnityLockfile`이 잠김), `batch-running`, `missing-path`, `local-only-old`(`full`만). **`systemFlags`:** `commit-high`, `commit-critical`, `editors-at-max`.
+
+상태 폴더의 파일 두 개가 함께 갑니다.
+
+- **`events.jsonl`:** `open`, `ready`, `close`, `acquire`, `release`, `renew`, `takeover`(만료 임대 넘겨받기), `refused`마다 한 줄입니다. 예: `{"time":"...","event":"close","slot":"MyGame-2","path":"...","owner":"claude:1a2b3c4d","pid":4120,"via":"cli","detail":{"closeSeconds":4.4,"commitDeltaGB":-7.8,"changedFiles":0}}`. `via`는 `cli`나 `mcp`입니다. 1MB가 넘으면 `events-prev.jsonl`로 옮깁니다. `lastOpenedAt`·`lastClosedAt`·`recentEvents`가 여기서 나옵니다.
+- **`install.json`:** `{"script":"<unity-slot.ps1 전체 경로>","version":"...","schema":1}`. 실행할 때마다 갱신하므로 위젯이 설정 없이 코어를 찾습니다. 다른 사본을 가리키고 있으면 더 새 버전일 때만 바꿉니다.
 
 ## 설계 메모
 

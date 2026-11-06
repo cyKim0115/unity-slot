@@ -64,6 +64,7 @@ From cmd or Git Bash, use `unity-slot.cmd <command> ...`.
 | `renew <slot> [-Owner <id>] [-Hours 8]` | Extends a lease. |
 | `new-clone <purpose\|platform> [-Project <repo>] [-From <slot>] [-Name <folder>] [-CloneRoot <dir>] [-NoOpen] [-Apply]` | Plans another clone (dry run). With `-Apply` it makes it: see [New clones](#new-clones). |
 | `hooks [<slot> -HookEvent <event>]` | Shows the config file in use, the hooks per event and the extra commands. With a slot and `-HookEvent` it runs that event's hooks now. |
+| `dashboard -Json [-Git basic\|full]` | One read-only JSON document for widgets and agents: see [Dashboard JSON](#dashboard-json). |
 | `<extra command>` | A command your config adds (see [Extra commands](#extra-commands)). |
 
 Options for any command: `-NoHooks` skips every hook, `-SkipHook a,b` skips the named ones, `-TimeoutSec`, `-StandbyWorkers`, `-EditorRoot`, `-Python`.
@@ -87,6 +88,8 @@ Settings come from the first file found: `$env:UNITY_SLOT_CONFIG`, `config.json`
 | `timeouts` | open 300, close 240, wait 45, stalled 300, firstOpen 2400, firstOpenWithLibrary 900, hook 120 | Seconds. |
 | `purposeRules` | see below | First guess at purposes during scan. |
 | `platformAliases` | none | Extra platform names, for example `{ "mobile": "Android" }`. |
+| `sceneBeacon` | none | Clone-relative JSON file an editor script of yours keeps up to date ([format](examples/hooks/scene-beacon.ps1)); the dashboard reports unsaved scenes from it. |
+| `dashboard` | commitHighPercent 85, commitCriticalPercent 90, leaseExpiringMinutes 30, localOnlyOldDays 14, recentEvents 20 | Thresholds for the dashboard's flags. |
 | `hooks` | none | Programs per event (next section). |
 | `commands` | none | Extra commands. |
 
@@ -160,7 +163,7 @@ It never runs `git clean -x`, `git stash -a`, commits to the project repository,
 
 | Tool | What it does |
 |---|---|
-| `status` | The registry as JSON; `processes=true` shows editor processes and memory instead. |
+| `status` | The registry as JSON; `processes=true` shows editor processes and memory instead; `dashboard=true` (with `git=basic\|full`) returns the [dashboard document](#dashboard-json). |
 | `acquire` | Leases a free slot for a purpose and starts its editor without waiting. |
 | `open` | Starts a slot's editor and returns at once. |
 | `wait_ready` | Waits up to 55 s per call: READY, STARTING (call again), STALLED, NOT RUNNING. |
@@ -194,6 +197,22 @@ tool_timeout_sec = 300
 The tools have no MCP annotations, so clients may ask before each call. In a non-interactive run (for example `codex exec`), allow this server's tools in the client's approval settings.
 
 A rule for agents can be this short: "For Unity work, acquire a slot (purpose, project), call wait_ready until READY, check through your Unity MCP that `Application.dataPath` is that slot, work, then release it. Never switch platforms, never take slots leased by others, hand stalls to the user."
+
+## Dashboard JSON
+
+`unity-slot dashboard -Json [-Git basic|full]` prints one JSON document on stdout (one line, UTF-8, nothing else) and exits 0. On an error stdout stays empty, the message goes to stderr and the exit code is 1. It is read-only: one process snapshot, git with `--no-optional-locks`, no hooks, no command lines in the output. On the test machine it took about 1.7 s with `basic` and 2.2 s with `full`, PowerShell start included.
+
+- **Top level:** `schema` (`unity-slot.dashboard/1`; a new major number means an incompatible change), `version`, `time`, `host`, `registry` (`path`, `updatedAt`, `maxEditors`), `system` (`commit` `usedGB`/`limitGB`/`percent`, `freePhysicalGB`, `editorsOpen`), `slots`, `unregisteredEditors`, `orphanWorkers`, `recentEvents`, `systemFlags`, `timing` (`totalMs`, `processMs`, `gitMs`). Times are ISO 8601 with the local offset, sizes GB with two decimals, missing values `null`.
+- **Each slot:** the registry fields (`name`, `path`, `project`, `repo`, `kind`, `unity`, `platform`, `purposes`, `mode`, `agentUse`, `memo`), `exists`, `editor`, `lease`, `git`, `lastOpenedAt`, `lastClosedAt`, `flags`.
+- **`editor.state`:** `closed`, `starting`, `ready`, `stalled` (not ready after `timeouts.stalled`), `unknown` (no per-clone log to read, for example an editor the Hub started), `batch`, `missing`. With an editor: `pid`, `startedAt`, `readyAt`, `readySeconds`, `launch` (`hub`/`direct`), `standby`, `lock`, `unsavedScene` (`sceneBeacon`), `memory` (`editorPrivGB`, `workersPrivGB`, `childrenPrivGB`, `totalPrivGB`, `totalWsGB`, `workers`, `children`).
+- **`lease`:** `owner`, `need`, `acquiredAt`, `expiresAt`, `expired`, `openedByAcquire`, `host`, or `null`.
+- **`git`:** `level`, `branch`, `upstream`, `upstreamGone`, `changes`, `ahead`, `behind`, `lastFetchAt`, `commonDir`, `error`. With `full` also `localOnly` (`commits` on local branches that no remote-tracking ref has, `oldestAt`), `branches` (`total`, `noUpstream`, `upstreamGone`), `stash`, `worktrees` (other working folders of the same repository). Slots that share a git directory are counted once. Nothing is fetched.
+- **`flags`:** `open-without-lease` (an on-demand slot open without a lease), `lease-expired-open`, `lease-expiring`, `stalled`, `unsaved-scene`, `stale-lock` (closed, but `Temp\UnityLockfile` is held), `batch-running`, `missing-path`, `local-only-old` (`full` only). **`systemFlags`:** `commit-high`, `commit-critical`, `editors-at-max`.
+
+Two files in the state folder go with it:
+
+- **`events.jsonl`:** one line per `open`, `ready`, `close`, `acquire`, `release`, `renew`, `takeover` (an expired lease taken over) and `refused`, for example `{"time":"...","event":"close","slot":"MyGame-2","path":"...","owner":"claude:1a2b3c4d","pid":4120,"via":"cli","detail":{"closeSeconds":4.4,"commitDeltaGB":-7.8,"changedFiles":0}}`. `via` is `cli` or `mcp`. Above 1 MB it moves to `events-prev.jsonl`. `lastOpenedAt`, `lastClosedAt` and `recentEvents` come from it.
+- **`install.json`:** `{"script":"<full path of unity-slot.ps1>","version":"...","schema":1}`, refreshed by every run, so a widget finds the core without settings. When it points at another existing copy, only a newer version replaces it.
 
 ## Design notes
 

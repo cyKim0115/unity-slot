@@ -7,6 +7,7 @@ unity-slot registers Unity project clones as slots and opens and closes their ed
 - `lib\registry.ps1`: the registry (`%USERPROFILE%\.unity-slot\slots.json`), detection, scan, slots, set
 - `lib\lease.ps1`: leases (`leases\<slot>.json`), acquire, release, renew
 - `lib\newclone.ps1`: the new-clone plan (dry run) and `-Apply`
+- `lib\dashboard.ps1`: the dashboard document (schema `unity-slot.dashboard/1`), `events.jsonl`, `install.json`, the one-look readiness check
 - `mcp\unity-slot-mcp.ps1`: stdio MCP server. A thin shell that runs `unity-slot.ps1` per tool call; no logic of its own.
 - `examples\hooks\`: example hooks. `config.example.json`: every setting with its default.
 
@@ -26,6 +27,8 @@ If `private/AGENTS.md` exists (a personal overlay, git-ignored in the public rep
 - **Keep project-specific behavior out of the core.** Paths, roots, purposes and timeouts belong in the config; project tools and checks belong in hooks or extra commands.
 - **Do not change the Unity project's shared settings or commit to the project repository.** No `git clean -x`/`-X` or `git stash -a` in a Unity clone.
 - **PowerShell 5.1: do not pass `@($list)` for a `List[object]` parameter.** It fails with "Argument types do not match". Pass `.ToArray()` or loop with `foreach`.
+- **`dashboard` stays read-only and prints only its JSON on stdout** (errors on stderr). No hooks, no command lines, git only with `--no-optional-locks`, one process snapshot. Fields are a contract for other tools: add fields freely, but renaming or removing one needs a new `schema` major number.
+- **Event logging and the install pointer never fail a command.** `Write-SlotEvent` and `Update-InstallPointer` swallow their errors.
 - **The MCP server writes only JSON-RPC messages to stdout.** Logs go to stderr. Tools return quickly (open and acquire with `-NoWait`, wait_ready at most 55 s). There is no kill tool; closing without saving and creating clones need explicit arguments.
 - **Do not touch audio settings** (volume, mute, Unity audio settings).
 

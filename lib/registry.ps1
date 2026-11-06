@@ -454,7 +454,8 @@ function Invoke-Slots {
         $rows.Add(@($s.name, $s.platform, $s.branch, $s.mode, $s.agentUse.ToString().ToLowerInvariant(), (@($s.purposes) -join ','), $st.Text, (Format-Lease $st.Lease), $s.project))
         $leaseOut = $null
         if ($null -ne $st.Lease) {
-            $leaseOut = [pscustomobject]@{ owner = $st.Lease.owner; expiresAt = (Format-Time $st.Lease.expiresAt); expired = $st.Lease.Expired; need = $st.Lease.need }
+            $leaseOut = [pscustomobject]@{ owner = $st.Lease.owner; expiresAt = (Format-Time $st.Lease.expiresAt); expired = $st.Lease.Expired; need = $st.Lease.need
+                acquiredAt = (Format-Time $st.Lease.acquiredAt); openedByAcquire = [bool]$st.Lease.openedByAcquire; host = $st.Lease.host }
         }
         $items.Add([pscustomobject]@{
             name = $s.name; path = $s.path; project = $s.project; platform = $s.platform; branch = $s.branch; kind = $s.kind

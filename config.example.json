@@ -36,6 +36,12 @@
   "_platformAliases": "Extra names for platforms in -BuildTarget, acquire and set.",
   "platformAliases": { "mobile": "Android" },
 
+  "_sceneBeacon": "Clone-relative JSON file an editor script of yours keeps up to date (format: examples\\hooks\\scene-beacon.ps1). The dashboard reports unsaved scenes from it. Empty: unknown.",
+  "sceneBeacon": "",
+
+  "_dashboard": "Thresholds for the dashboard's flags: commit-high / commit-critical (percent), lease-expiring (minutes), local-only-old (days); recentEvents = events in the document.",
+  "dashboard": { "commitHighPercent": 85, "commitCriticalPercent": 90, "leaseExpiringMinutes": 30, "localOnlyOldDays": 14, "recentEvents": 20 },
+
   "_hooks": "Programs to run per event (README: Hooks). enabled:false keeps an entry without running it.",
   "hooks": {
     "beforeClose": [

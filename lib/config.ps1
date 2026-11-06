@@ -29,7 +29,7 @@ $script:HookEventHelp = [ordered]@{
     afterClone     = 'new-clone made and registered a clone (before its first open)'
     afterFirstOpen = 'a new clone''s editor is READY for the first time (new-clone, open or wait)'
 }
-$script:BuiltinCommands = @('open', 'wait', 'close', 'status', 'slots', 'scan', 'set', 'acquire', 'release', 'renew', 'new-clone', 'hooks')
+$script:BuiltinCommands = @('open', 'wait', 'close', 'status', 'slots', 'scan', 'set', 'acquire', 'release', 'renew', 'new-clone', 'hooks', 'dashboard')
 $script:ConfigCache = $null
 $script:ConfigFileUsed = $null
 $script:Utf8NoBom = New-Object Text.UTF8Encoding($false)
@@ -54,6 +54,11 @@ function Get-DefaultConfig {
             notCopiedToNewClone = [string[]]@('main')
         }
         platformAliases = [pscustomobject]@{}
+        # clone-relative scene beacon an editor script writes (examples\hooks\scene-beacon.ps1); '' = none
+        sceneBeacon     = ''
+        dashboard       = [pscustomobject][ordered]@{
+            commitHighPercent = 85; commitCriticalPercent = 90; leaseExpiringMinutes = 30; localOnlyOldDays = 14; recentEvents = 20
+        }
         hooks           = [pscustomobject]@{}
         commands        = [pscustomobject]@{}
     }

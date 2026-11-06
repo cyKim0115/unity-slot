@@ -34,7 +34,7 @@ function Get-SlotLease([string]$SlotName) {
         try { $d = [IO.File]::ReadAllText($file, [Text.Encoding]::UTF8) | ConvertFrom-Json } catch { Start-Sleep -Milliseconds 200 }
     }
     if ($null -eq $d) {
-        return [pscustomobject]@{ owner = '(unreadable lease file)'; acquiredAt = $null; expiresAt = $null; need = ''; nonce = ''; editorPid = 0; openedByAcquire = $false; Expired = $true }
+        return [pscustomobject]@{ owner = '(unreadable lease file)'; acquiredAt = $null; expiresAt = $null; need = ''; nonce = ''; editorPid = 0; openedByAcquire = $false; host = ''; Expired = $true }
     }
     $exp = $null
     $e = [string](Get-Prop $d 'expiresAt')
@@ -50,6 +50,7 @@ function Get-SlotLease([string]$SlotName) {
         nonce           = [string](Get-Prop $d 'nonce')
         editorPid       = [int](Get-Prop $d 'editorPid')
         openedByAcquire = [bool](Get-Prop $d 'openedByAcquire')
+        host            = [string](Get-Prop $d 'host')
         Expired         = ($null -eq $exp -or (Get-Date) -gt $exp)
     }
 }
@@ -76,7 +77,7 @@ function New-SlotLease($Slot, [string]$OwnerId, [string]$Need, [double]$HoursVal
     $now = Get-Date
     $lease = [pscustomobject]@{
         owner = $OwnerId; acquiredAt = $now; expiresAt = $now.AddHours($HoursValue); need = $Need
-        nonce = [guid]::NewGuid().ToString('N'); editorPid = 0; openedByAcquire = $false; Expired = $false
+        nonce = [guid]::NewGuid().ToString('N'); editorPid = 0; openedByAcquire = $false; host = $env:COMPUTERNAME; Expired = $false
     }
     $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes((ConvertTo-LeaseJson $Slot.name $lease))
     $file = Get-LeaseFile $Slot.name
@@ -179,7 +180,11 @@ function Invoke-Acquire {
         $lease = New-SlotLease $c.Slot $ownerId $need (Get-LeaseHours) $replace
         if ($null -ne $lease) {
             $chosen = $c
-            if ($replace) { Say ('lease   replaced the expired lease of {0}' -f $existing.owner) }
+            if ($replace) {
+                Say ('lease   replaced the expired lease of {0}' -f $existing.owner)
+                Write-SlotEvent 'takeover' $c.Slot.path $c.State.EditorPid ([ordered]@{ previousOwner = $existing.owner; previousExpiresAt = (Format-Iso $existing.expiresAt) }) $ownerId
+            }
+            Write-SlotEvent 'acquire' $c.Slot.path $c.State.EditorPid ([ordered]@{ need = $need; hours = (Get-LeaseHours); expiresAt = (Format-Iso $lease.expiresAt) }) $ownerId
             break
         }
         Say ('lease   {0} was taken a moment ago, trying the next slot' -f $c.Slot.name)
@@ -233,23 +238,31 @@ function Invoke-Release {
     }
     if ($st.Lease.owner -ne $ownerId -and -not $AnyOwner) {
         Say ('REFUSED: the lease belongs to {0}, not {1}. -AnyOwner releases it anyway (only when the user says so).' -f $st.Lease.owner, $ownerId)
+        Write-SlotEvent 'refused' $slot.path $st.EditorPid ([ordered]@{ command = 'release'; reason = 'lease of someone else'; leaseOwner = $st.Lease.owner }) $ownerId
         $script:ExitCode = 4
         return
     }
+    $detail = [ordered]@{ closed = $false; keptOpen = $false; anyOwner = [bool]$AnyOwner; leaseOwner = $st.Lease.owner }
     if ($st.EditorPid -gt 0) {
         if ($slot.mode -eq 'hot') {
             Say 'editor  hot slot: stays open'
+            $detail.keptOpen = $true
         } elseif ($KeepOpen) {
             Say 'editor  left open (-KeepOpen)'
+            $detail.keptOpen = $true
         } else {
+            $script:LastCloseDetail = $null
             Invoke-Close $slot.path
             if ($script:ExitCode -ne 0) {
                 Say ('lease   kept: the editor did not close (exit {0})' -f $script:ExitCode)
                 return
             }
+            $detail.closed = $true
+            if ($null -ne $script:LastCloseDetail) { foreach ($k in @($script:LastCloseDetail.Keys)) { $detail[$k] = $script:LastCloseDetail[$k] } }
         }
     }
     Remove-SlotLease $slot.name
+    Write-SlotEvent 'release' $slot.path $st.EditorPid $detail $ownerId
     Say ('RELEASED {0}' -f $slot.name)
 }
 
@@ -260,8 +273,14 @@ function Invoke-Renew {
     $ownerId = Resolve-Owner
     $lease = Get-SlotLease $slot.name
     if ($null -eq $lease) { Say 'NOT LEASED'; $script:ExitCode = 4; return }
-    if ($lease.owner -ne $ownerId) { Say ('REFUSED: the lease belongs to {0}' -f $lease.owner); $script:ExitCode = 4; return }
+    if ($lease.owner -ne $ownerId) {
+        Say ('REFUSED: the lease belongs to {0}' -f $lease.owner)
+        Write-SlotEvent 'refused' $slot.path 0 ([ordered]@{ command = 'renew'; reason = 'lease of someone else'; leaseOwner = $lease.owner }) $ownerId
+        $script:ExitCode = 4
+        return
+    }
     $lease.expiresAt = (Get-Date).AddHours((Get-LeaseHours))
     Update-SlotLease $slot.name $lease
+    Write-SlotEvent 'renew' $slot.path 0 ([ordered]@{ expiresAt = (Format-Iso $lease.expiresAt) }) $ownerId
     Say ('RENEWED {0} until {1}' -f $slot.name, (Format-Time $lease.expiresAt))
 }
