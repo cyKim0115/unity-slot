@@ -1,6 +1,6 @@
 # AGENTS.md
 
-unity-slot registers Unity project clones as slots and opens and closes their editors on demand (`unity-slot.ps1` + `lib\*.ps1`). Usage and design: [README.md](README.md).
+unity-slot registers Unity project clones as slots and opens and closes their editors on demand (`unity-slot.ps1` + `lib\*.ps1`). Usage and design: [README.md](README.md) (Korean) / [README.en.md](README.en.md) (English).
 
 - `unity-slot.ps1`: parameters, open, wait, close, status, command dispatch
 - `lib\config.ps1`: settings file, hooks (child processes), extra commands, the `hooks` command
