@@ -1,0 +1,57 @@
+{
+  "_readme": "Copy to config.json next to unity-slot.ps1 (git-ignored) or to %USERPROFILE%\\.unity-slot\\config.json, then edit. Every key is optional: a missing key keeps the built-in default shown here. Keys starting with _ are comments. Text may use {home}, {repo}, {state} and %VARIABLES%.",
+
+  "_editorRoots": "Folders that hold <version>\\Editor\\Unity.exe. The Unity Hub's custom install folder is added automatically.",
+  "editorRoots": ["C:\\Program Files\\Unity\\Hub\\Editor"],
+
+  "_scanRoots": "Folders whose subfolders are clones, for scan. Example value; the default is none (pass -ScanRoot).",
+  "scanRoots": ["C:\\Projects"],
+
+  "_cloneRoot": "Where new-clone creates clones. Empty: next to the template clone.",
+  "cloneRoot": "",
+
+  "_maxEditors": "acquire and new-clone refuse to start more editors than this. 0 keeps the registry value (6).",
+  "maxEditors": 6,
+
+  "_standbyWorkers": "Passed as -standbyWorkerCount. Unity 6000.6 rejects 0. -1 = do not pass it.",
+  "standbyWorkers": 1,
+
+  "leaseHours": 8,
+
+  "_python": "Python for .py hooks. Empty: UNITY_SLOT_PYTHON, then python on PATH.",
+  "python": "",
+
+  "_timeouts": "Seconds. stalled = when wait reports a starting editor as stalled. hook = per hook unless the hook sets timeoutSec.",
+  "timeouts": { "open": 300, "close": 240, "wait": 45, "stalled": 300, "firstOpen": 2400, "firstOpenWithLibrary": 900, "hook": 120 },
+
+  "_purposeRules": "First guess at a new slot's purposes during scan, from the folder name without the repository name (the suffix) and the platform. You confirm or change them with set.",
+  "purposeRules": {
+    "mainWhenNoSuffix": true,
+    "suffix": [ { "pattern": "^\\d+$", "purposes": ["agent"] } ],
+    "platform": { "WebGL": ["webgl"], "Windows": ["windows"] },
+    "fallback": ["agent"],
+    "notCopiedToNewClone": ["main"]
+  },
+
+  "_platformAliases": "Extra names for platforms in -BuildTarget, acquire and set.",
+  "platformAliases": { "mobile": "Android" },
+
+  "_hooks": "Programs to run per event (README: Hooks). enabled:false keeps an entry without running it.",
+  "hooks": {
+    "beforeClose": [
+      {
+        "name": "scene-beacon",
+        "enabled": false,
+        "run": ["{repo}\\examples\\hooks\\scene-beacon.ps1", "-Beacon", "Temp\\SceneBeacon.json"]
+      }
+    ],
+    "afterClose": [],
+    "openStalled": [],
+    "closeStalled": [],
+    "afterClone": [],
+    "afterFirstOpen": []
+  },
+
+  "_commands": "Extra commands: { \"name\": { \"script\": \"{repo}\\\\private\\\\my-command.ps1\", \"function\": \"Invoke-MyCommand\", \"usage\": \"name <slot> [-Apply]\" } }",
+  "commands": {}
+}

@@ -1,0 +1,4 @@
+# 기본은 LF. Windows 스크립트만 CRLF 로 체크아웃한다.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
