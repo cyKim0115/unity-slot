@@ -137,7 +137,7 @@ param(
     [switch]$Apply
 )
 
-$script:UnitySlotVersion = '0.5.5'
+$script:UnitySlotVersion = '0.5.6'
 $script:ExitCode = 0
 $script:LastOpenPid = 0
 $script:LastStartupPhase = $null
@@ -594,6 +594,9 @@ function Read-NewLogLines($Reader) {
 }
 
 # Last lines of a log, masked. Small files are read whole so a flag line is never cut from its value.
+# After masking, ##utp lines (machine JSON for Unity's tools; a MemoryLeaks one was over 2 KB) are
+# left out and long lines are cut, so a tail stays a few short lines for an agent to read.
+$script:LogTailWidth = 300
 function Get-LogTail([string]$File, [int]$Count) {
     if (-not (Test-Path -LiteralPath $File)) { return }
     $fs = New-Object IO.FileStream($File, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
@@ -610,6 +613,9 @@ function Get-LogTail([string]$File, [int]$Count) {
     $lines = @([Text.Encoding]::UTF8.GetString($buf, 0, $read) -split "`r?`n")
     if ($start -gt 0 -and $lines.Count -gt 0) { $lines = @($lines | Select-Object -Skip 1) }
     $lines = @(Protect-LogLines @($lines | Where-Object { $_.Trim() -ne '' }))
+    $lines = @($lines | Where-Object { -not $_.TrimStart().StartsWith('##utp:') } | ForEach-Object {
+            if ($_.Length -gt $script:LogTailWidth) { $_.Substring(0, $script:LogTailWidth) + ' ...' } else { $_ }
+        })
     $lines | Select-Object -Last $Count
 }
 
@@ -667,6 +673,43 @@ function Format-StartupPhase($Phase) {
 # Live import workers of an editor (Unity.exe -parentPid <editor>).
 function Get-ImportWorkerCount([int]$EditorPid) {
     return @((Get-Snapshot).Unity | Where-Object { $_.Kind -eq 'worker' -and $_.Owner -eq $EditorPid }).Count
+}
+
+# MCP for Unity names an editor "<project folder>@<hash>": the first 8 hex digits of the SHA-1 of
+# Application.dataPath in UTF-8 (forward slashes, ending in /Assets, case as Unity reports it, so the
+# drive letter is upper-case). A status file of the plugin (unity-mcp-status-<hash>.json with
+# project_name and project_path) whose path matches this clone gives the name Unity actually uses.
+# The folder is %USERPROFILE%\.unity-mcp (UNITY_SLOT_UNITY_MCP_DIR replaces it, for tests).
+function Get-UnityMcpInstanceId([string]$Clone) {
+    $root = ([string]$Clone).TrimEnd('\', '/')
+    if ($root -match '^[a-z]:') { $root = $root.Substring(0, 1).ToUpperInvariant() + $root.Substring(1) }
+    $dataPath = $root.Replace('\', '/') + '/Assets'
+    $dir = [string]$env:UNITY_SLOT_UNITY_MCP_DIR
+    if (-not $dir) { $dir = Join-Path $env:USERPROFILE '.unity-mcp' }
+    $files = @()
+    try { $files = @(Get-ChildItem -LiteralPath $dir -Filter 'unity-mcp-status-*.json' -File -ErrorAction Stop) } catch { }
+    foreach ($f in $files) {
+        $j = $null
+        try { $j = [IO.File]::ReadAllText($f.FullName, [Text.Encoding]::UTF8) | ConvertFrom-Json } catch { continue }
+        $p = [string](Get-Prop $j 'project_path')
+        if (-not $p -or -not [string]::Equals($p.TrimEnd('/'), $dataPath, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $name = [string](Get-Prop $j 'project_name')
+        if (-not $name) { $name = Split-Path $root -Leaf }
+        return ('{0}@{1}' -f $name, $f.BaseName.Substring('unity-mcp-status-'.Length))
+    }
+    $sha = [Security.Cryptography.SHA1]::Create()
+    try { $hex = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($dataPath))[0..3] | ForEach-Object { $_.ToString('x2') }) }
+    finally { $sha.Dispose() }
+    return ('{0}@{1}' -f (Split-Path $root -Leaf), $hex)
+}
+
+# The pin line of READY and acquire. MCP for Unity sends calls to the editor a session pinned, and with
+# a single editor open the first call pins that one for the whole session, so a slot editor that opens
+# later would not get the calls. Claude Code cannot read the plugin's instances resource to look the id up.
+function Format-PinLine([string]$Clone) {
+    $id = Get-UnityMcpInstanceId $Clone
+    if (Test-ViaMcp) { return ('pin     before your first Unity MCP call: set_active_instance(instance="{0}") (MCP for Unity), so the calls go to this editor' -f $id) }
+    return ('pin     MCP for Unity instance {0}: pin it with set_active_instance before the first Unity call' -f $id)
 }
 
 # ------------------------------------------------------------------ dialogs (look only)
@@ -964,6 +1007,7 @@ function Wait-EditorReady([string]$Clone, [int]$EditorPid, [string]$Log, [dateti
     Say ('commit  {0}' -f (Format-Commit $commitNow))
     Write-CapacityWarnings $snapNow $commitNow $false
     Invoke-PendingHooks $Clone $EditorPid $Log
+    Say (Format-PinLine $Clone)
     if (Test-ViaMcp) { Say ('next    check with your Unity MCP that Application.dataPath is "{0}/Assets" before writing anything' -f $Clone.Replace('\', '/')) }
     else { Say 'next    check through MCP that Application.dataPath is this clone before writing anything' }
     return 'ready'

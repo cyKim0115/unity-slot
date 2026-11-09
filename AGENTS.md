@@ -11,6 +11,7 @@ unity-slot registers Unity project clones as slots and opens and closes their ed
 - `lib\summary.ps1`: the short status (`summary`, the MCP `status` default), drawn from the dashboard document
 - `mcp\unity-slot-mcp.ps1`: stdio MCP server. A thin shell that runs `unity-slot.ps1` per tool call; no logic of its own.
 - `examples\hooks\`: example hooks. `config.example.json`: every setting with its default.
+- `tests\`: regression and failure tests with a stub `Unity.exe` (`tests\run-tests.ps1`); core problems they found are in `tests\FINDINGS.md`.
 
 If `private/AGENTS.md` exists (a personal overlay, git-ignored in the public repository), read it and follow it too.
 
@@ -28,6 +29,7 @@ If `private/AGENTS.md` exists (a personal overlay, git-ignored in the public rep
 - **Keep project-specific behavior out of the core.** Paths, roots, purposes and timeouts belong in the config; project tools and checks belong in hooks or extra commands.
 - **Do not change the Unity project's shared settings or commit to the project repository.** No `git clean -x`/`-X` or `git stash -a` in a Unity clone.
 - **PowerShell 5.1: do not pass `@($list)` for a `List[object]` parameter.** It fails with "Argument types do not match". Pass `.ToArray()` or loop with `foreach`.
+- **PowerShell variable names ignore case.** A local `$timeout` is the same variable as a parameter `$Timeout`; give locals other names (`tests\FINDINGS.md` F1).
 - **`dashboard` stays read-only and prints only its JSON on stdout** (errors on stderr). No hooks, no command lines, git only with `--no-optional-locks`, one process snapshot. Fields are a contract for other tools: add fields freely, but renaming or removing one needs a new `schema` major number.
 - **Event logging and the install pointer never fail a command.** `Write-SlotEvent` and `Update-InstallPointer` swallow their errors.
 - **Next steps under MCP name the tools; the CLI wording does not change.** When `Test-ViaMcp` is true (`UNITY_SLOT_VIA=mcp`), write `Format-ToolCall 'wait_ready' @('slot', $name)` and so on instead of a `unity-slot <command>` line, and leave the owner out when it is the session's own (`Get-OwnerArg`). Compare the CLI output before and after a change.
@@ -53,7 +55,12 @@ $env:UNITY_SLOT_HOME = "$env:TEMP\unity-slot-test"
 $env:UNITY_SLOT_CONFIG = "$env:TEMP\unity-slot-test\config.json"
 # capacity warnings with a made-up commit charge (percent, 0 to 100)
 $env:UNITY_SLOT_COMMIT_OVERRIDE = '91'
+
+# Regression and failure tests with a stub Unity.exe (3 to 4 minutes; own state folder, no real editor)
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1
 ```
+
+Run `tests\run-tests.ps1` after changing the core or the MCP server. A new KNOWN or FAIL needs a fix or an entry in `tests\FINDINGS.md`.
 
 Run real `open`, `close` and `acquire` only on clones that are closed and that nobody is looking at. Test `new-clone -Apply` with a fake project (a local bare origin, `-CloneRoot`, `-NoOpen`).
 

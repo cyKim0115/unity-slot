@@ -10,8 +10,11 @@
 #                           takeover (an expired lease taken over), refused. Rotated to
 #                           events-prev.jsonl above 1 MB. Writing it never fails a command.
 # <slot home>\install.json  {"script": "<this unity-slot.ps1>", "version": "...", "schema": 1}, refreshed
-#                           by every run so other tools (a widget) find the core. When it points at
-#                           another existing copy, only a newer version takes it over.
+#                           by every run so other tools (a widget) find the core. While it points at
+#                           another copy that exists, no run of this copy replaces it, newer or not:
+#                           development checkouts run too (tests\FINDINGS.md F3). It is written when
+#                           it is missing or unreadable, when the copy it names is gone, or by that
+#                           copy itself. To move it, delete it; the next copy that runs takes it.
 
 $script:DashboardSchema = 'unity-slot.dashboard/1'
 $script:EventsMaxBytes = 1MB
@@ -91,11 +94,8 @@ function Update-InstallPointer {
             $cur = $null
             try { $cur = $raw | ConvertFrom-Json } catch { }
             $curScript = [string](Get-Prop $cur 'script')
-            if ($curScript -and -not (Test-SamePath $curScript $me) -and (Test-Path -LiteralPath $curScript -PathType Leaf)) {
-                $curVersion = $null
-                try { $curVersion = [version][string](Get-Prop $cur 'version') } catch { }
-                if ($null -ne $curVersion -and [version]$script:UnitySlotVersion -le $curVersion) { return }
-            }
+            # another copy that still exists keeps it, whatever the versions
+            if ($curScript -and -not (Test-SamePath $curScript $me) -and (Test-Path -LiteralPath $curScript -PathType Leaf)) { return }
         } elseif (-not (Test-Path -LiteralPath $dir)) {
             [void](New-Item -ItemType Directory -Path $dir -Force)
         }

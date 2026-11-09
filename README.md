@@ -100,7 +100,7 @@ stateDiagram-v2
 | 명령 | 하는 일 |
 |---|---|
 | `open <슬롯\|클론> [-BuildTarget <플랫폼>] [-NoWait]` | 클론이 열려 있지 않으면 에디터를 띄우고 준비될 때까지 기다립니다. `-NoWait`면 띄우고 바로 끝나니, 그다음 `wait`를 부르면 됩니다. |
-| `wait <슬롯\|클론> [-TimeoutSec 45]` | 시작 중인 에디터를 한 번 정해진 시간만큼 기다립니다. READY, STARTING(exit 6), 5분이 넘으면 멈춤으로 봅니다(exit 2, 에디터 창 목록). STARTING·멈춤 줄에는 Editor.log에서 마지막으로 본 단계(엔진 시작, 스크립트 어셈블리, 에셋 새로고침의 패키지·스크립트 컴파일(%)·스크립트 다시 로드·임포트, 씬 열기, 마무리)와 임포트 워커 수가 붙습니다. |
+| `wait <슬롯\|클론> [-TimeoutSec 45]` | 시작 중인 에디터를 한 번 정해진 시간만큼 기다립니다. READY, STARTING(exit 6), 5분이 넘으면 멈춤으로 봅니다(exit 2, 에디터 창 목록). STARTING·멈춤 줄에는 Editor.log에서 마지막으로 본 단계(엔진 시작, 스크립트 어셈블리, 에셋 새로고침의 패키지·스크립트 컴파일(%)·스크립트 다시 로드·임포트, 씬 열기, 마무리)와 임포트 워커 수가 붙습니다. 로그 꼬리(NOT RUNNING·멈춤·시간 초과·EXITED)는 비밀값을 가린 뒤 `##utp` 줄을 빼고 줄마다 300자로 자릅니다. READY에는 `pin` 줄(아래 「Unity MCP 고정」)이 붙습니다. |
 | `close <슬롯\|클론> [-AllowDirty]` | beforeClose 훅을 돌리고, X 버튼처럼 닫기를 요청하고, 기다린 뒤 남은 자식 프로세스와 git이 보는 변경(닫으며 쓴 파일, 열린 동안 바뀐 파일)을 알려 줍니다. |
 | `status [-Json] [-ShowCommandLine]` | 열린 에디터와 자식 프로세스, 메모리(Private/작업 집합)를 보여 줍니다. |
 | `slots [<슬롯>] [-Project <repo>] [-Json]` | 등록부와 슬롯별 상태·임대를 보여 줍니다. 슬롯이나 `-Project`로 좁힐 수 있습니다. |
@@ -242,6 +242,13 @@ flowchart TD
 
 수용량 경고: 닫힌 슬롯의 에디터를 띄우기 전(open·acquire·new-clone)과 READY가 됐을 때, 열린 에디터가 `maxEditors`에 이르거나 커밋이 `dashboard.commitHighPercent`(85)·`commitCriticalPercent`(90)에 이르면 `warn capacity: ...` 줄을 냅니다. 대시보드 경고와 같은 기준입니다. 경고만 하고 거부하지 않습니다. 종료 코드와 임대는 그대로이고, 줄은 에이전트가 사용자에게 알리도록 씁니다. 이미 열린 상시 슬롯을 잡을 때는 에디터가 늘지 않으므로 보지 않습니다. 시험에서는 `UNITY_SLOT_COMMIT_OVERRIDE=<퍼센트>`로 커밋 값을 바꿀 수 있습니다.
 
+Unity MCP 고정: [MCP for Unity](https://github.com/CoplayDev/unity-mcp)는 세션이 고정한 에디터로 호출을 보냅니다. 에디터가 하나뿐이면 첫 호출이 그 에디터를 세션 내내 고정하므로, 나중에 뜬 슬롯 에디터로 호출이 가지 않을 수 있습니다. 그래서 acquire와 READY는 `pin` 줄에 그 에디터의 인스턴스 ID를 알려 줍니다(MCP에서는 `set_active_instance(instance="MyGame-2@1a2b3c4d")`). ID는 `<프로젝트 폴더>@<해시>`이고, 해시는 `Application.dataPath`(슬래시, `/Assets`로 끝남, 드라이브 문자 대문자)의 UTF-8 SHA-1 앞 8자리입니다. 그 플러그인의 상태 파일(`%USERPROFILE%\.unity-mcp\unity-mcp-status-<해시>.json`)에 이 클론의 `project_path`가 있으면 그 이름과 해시를 씁니다(시험은 `UNITY_SLOT_UNITY_MCP_DIR`로 폴더를 바꿉니다).
+
+인스턴스 목록은 원래 그 플러그인의 인스턴스 목록 리소스로 보지만, Claude Code에서는 그 서버의 리소스를 읽을 수 없습니다. 대신 이렇게 봅니다.
+
+- `%USERPROFILE%\.unity-mcp\unity-mcp-status-<해시>.json`마다 `project_name`·`project_path`·`unity_port`·`last_heartbeat`가 있으니, `<project_name>@<해시>`로 목록을 만듭니다.
+- 없는 포트 번호로 `set_active_instance(instance="1")`을 부르면 오류가 `Available: Name@hash (port N)` 목록을 줍니다. 고정은 바뀌지 않습니다.
+
 에이전트 한 번의 작업은 이렇게 흐릅니다.
 
 ```mermaid
@@ -258,6 +265,7 @@ sequenceDiagram
         A->>S: wait_ready
         S-->>A: STARTING · READY
     end
+    A->>U: set_active_instance(pin 줄의 ID)로 그 에디터에 고정
     A->>U: Application.dataPath가 그 슬롯인지 확인
     A->>U: 작업
     A->>S: release
@@ -288,7 +296,7 @@ tool_timeout_sec = 300
 
 도구에는 MCP annotations가 붙어 있습니다(프로토콜 2025-03-26부터, 2024-11-05 클라이언트에는 빼고 줍니다). `status`·`wait_ready`는 읽기 전용, `acquire`·`open`·`create`는 바꾸지만 파괴적이지 않음(`create`는 `git clone`으로 네트워크를 씀), `close`·`release`는 에디터를 닫고 `close`는 `discard_unsaved`로 미저장 변경을 버릴 수 있어 파괴적으로 표시합니다. 힌트는 권한을 주지 않습니다. 클라이언트가 여전히 호출마다 물을 수 있고, 비대화형 실행(예: `codex exec`)에서는 클라이언트 승인 설정에서 이 서버의 도구를 허용해야 할 수 있습니다.
 
-에이전트 규칙은 이 정도로 짧아도 됩니다: 「먼저 Unity 에디터가 필요한 일인지 정하세요. 확실하지 않으면 열지 마세요. 필요하면 pull·브랜치 전환은 닫혀 있을 때 끝내고, 계획·조사보다 먼저 슬롯을 acquire(용도, 프로젝트)하세요. 에디터가 뜨는 동안(12초~수 분) 코드 읽기·조사·계획을 하고, Unity 에셋·스크립트 수정은 READY 뒤에 하세요. 에디터가 필요해지면 READY까지 wait_ready를 부르고, Unity MCP로 `Application.dataPath`가 그 슬롯인지 확인한 뒤 일하고, 끝나면 release하세요. 슬롯 여러 개는 커밋이 높음 기준 아래일 때(`warn capacity` 줄이 없을 때)만 함께 잡고, 아니면 하나씩 잡으세요. 플랫폼을 바꾸지 말고, 남이 임대한 슬롯을 잡지 말고, 멈추면 사용자에게 넘기세요.」
+에이전트 규칙은 이 정도로 짧아도 됩니다: 「먼저 Unity 에디터가 필요한 일인지 정하세요. 확실하지 않으면 열지 마세요. 필요하면 pull·브랜치 전환은 닫혀 있을 때 끝내고, 계획·조사보다 먼저 슬롯을 acquire(용도, 프로젝트)하세요. 에디터가 뜨는 동안(12초~수 분) 코드 읽기·조사·계획을 하고, Unity 에셋·스크립트 수정은 READY 뒤에 하세요. 에디터가 필요해지면 READY까지 wait_ready를 부르고, `pin` 줄의 `set_active_instance`로 Unity MCP를 그 에디터에 고정하고, `Application.dataPath`가 그 슬롯인지 확인한 뒤 일하고, 끝나면 release하세요. 슬롯 여러 개는 커밋이 높음 기준 아래일 때(`warn capacity` 줄이 없을 때)만 함께 잡고, 아니면 하나씩 잡으세요. 플랫폼을 바꾸지 말고, 남이 임대한 슬롯을 잡지 말고, 멈추면 사용자에게 넘기세요.」
 
 ## 대시보드 JSON
 
@@ -304,7 +312,7 @@ tool_timeout_sec = 300
 상태 폴더의 파일 두 개가 함께 갑니다.
 
 - **`events.jsonl`:** `open`, `ready`, `close`, `acquire`, `release`, `renew`, `takeover`(만료 임대 넘겨받기), `refused`마다 한 줄입니다. 예: `{"time":"...","event":"close","slot":"MyGame-2","path":"...","owner":"claude:1a2b3c4d","pid":4120,"via":"cli","detail":{"closeSeconds":4.4,"commitDeltaGB":-7.8,"changedFiles":0}}`. `via`는 `cli`나 `mcp`입니다. 1MB가 넘으면 `events-prev.jsonl`로 옮깁니다. `lastOpenedAt`·`lastClosedAt`·`recentEvents`가 여기서 나옵니다.
-- **`install.json`:** `{"script":"<unity-slot.ps1 전체 경로>","version":"...","schema":1}`. 실행할 때마다 갱신하므로 위젯이 설정 없이 코어를 찾습니다. 다른 사본을 가리키고 있으면 더 새 버전일 때만 바꿉니다.
+- **`install.json`:** `{"script":"<unity-slot.ps1 전체 경로>","version":"...","schema":1}`. 실행할 때마다 갱신하므로 위젯이 설정 없이 코어를 찾습니다. 가리키는 다른 사본이 있으면 버전과 상관없이 바꾸지 않습니다(개발 중인 사본도 돌기 때문입니다). 옮기려면 이 파일을 지우세요. 다음에 실행되는 사본이 가져갑니다.
 
 ## 위젯
 
@@ -329,6 +337,24 @@ tool_timeout_sec = 300
 ## 시험한 환경
 
 Windows 10 22H2, Windows PowerShell 5.1, Unity 6000.6.0f1, 한 기기에서 프로젝트 2개와 각각의 클론 여러 개(동시에 에디터 최대 5개). 다시 열기는 12~14초, 며칠 만의 첫 열기는 약 60초, 닫기는 4~13초 걸렸습니다. 다른 Unity 버전과 기기에서는 시험하지 않았습니다. 결과를 알려 주시면 반영하겠습니다.
+
+## 회귀 시험
+
+`tests\run-tests.ps1`은 실제 Unity 없이 가짜 `Unity.exe`(스텁)로 코어와 MCP 서버를 시험합니다. 실제 등록부·임대·이벤트(`%USERPROFILE%\.unity-slot`)는 읽지도 쓰지도 않습니다. 설치할 것은 없습니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1                 # 전부(3~4분)
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1 -Phase 1        # 현행 동작만
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1 -Only '^close\.' -KeepRoot
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1 -List
+```
+
+- **스텁.** `tests\stub\UnityStub.cs`를 Windows에 들어 있는 .NET Framework 컴파일러(`csc.exe`)로 빌드합니다. `-projectPath`·`-logFile`·`-standbyWorkerCount`·`-buildTarget`을 읽고, Unity와 같은 꼴의 창 제목, `Temp\UnityLockfile`, Editor.log의 `##utp` `ProjectInfo` 줄, X(CloseMainWindow)로 닫기, 네이티브 버튼이 있는 대화상자, 씬 비컨, 임포트 워커(`-parentPid`)를 흉내 냅니다. 동작은 클론의 `Temp\unity-stub.txt`(제어 파일)로 정합니다: `normal`, `never-ready`, `dialog`, `slow-close`, `ignore-close`, `dirty`, `exit-early`. WMI로 뜬 프로세스는 호출한 셸의 환경변수를 받지 않으므로 환경변수로는 정하지 않습니다.
+- **격리.** 시험 폴더(기본 `%TEMP%\unity-slot-tests\<시각>`)에 스텁, 로컬 bare origin, 가짜 클론(`MyGame`, `MyGame-1`, `MyGame-2`, `MyGame-Web`)을 만들고, 그룹마다 `UNITY_SLOT_HOME`·`UNITY_SLOT_CONFIG`를 따로 줍니다. 가짜 클론의 Unity 버전은 `9999.0.0f1`이라 실제 에디터가 열릴 일이 없습니다. 실행 전후로 실제 `slots.json`·`install.json`의 수정 시각과 해시가 같은지 확인합니다.
+- **그룹.** `lease`(임대·경쟁·만료 임대 넘겨받기·빈 슬롯·상시 슬롯), `close`(닫기 거부·시간 초과·batchmode·잠금), `start`(STARTING·STALLED·대화상자 목록·`-TimeoutSec`·버전·플랫폼), `report`(`events.jsonl`·`install.json` 포인터·대시보드·비밀값), `mcp`(프로토콜·임대 흐름), `phase2`(MCP 안내 문구·시간·annotations·status 요약·수용량 경고·시작 단계, 아직 코어에 없는 개선은 SKIP). 그룹은 따로 프로세스에서 3개씩 함께 돌고, 그룹 안의 시험은 차례로 돕니다.
+- **결과.** 시험마다 PASS·FAIL·KNOWN·SKIP과 시간을 찍고, FAIL이 없으면 exit 0입니다. KNOWN은 [tests/FINDINGS.md](tests/FINDINGS.md)에 적은 코어 문제의 재현 시험입니다. 모두 통과하면 시험 폴더를 지우고, 아니면 남깁니다(`envs\<그룹>\cli.log`에 모든 실행의 출력이 있습니다).
+- **지키는 것.** 스텁도 죽이지 않습니다. 시험은 제어 파일로 스텁이 스스로 끝나게 하고, 끝나지 않은 스텁은 보고만 합니다(10분 뒤 스스로 끝납니다). 대화상자는 누르지 않고 목록만 봅니다. 스텁 창은 화면 밖에 포커스를 뺏지 않고 뜨며, 소리를 내지 않습니다.
+- **앱 패키지 셸.** MSIX로 설치한 앱의 셸은 AppData 쓰기가 앱 전용 폴더로 가서, WMI로 뜬 스텁이 그 파일을 보지 못합니다. 그런 셸에서 시험 폴더가 AppData 아래면 시작하지 않으니 `-Root`로 다른 폴더를 주세요.
 
 ## 라이선스
 

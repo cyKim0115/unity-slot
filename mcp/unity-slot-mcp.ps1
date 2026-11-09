@@ -91,7 +91,8 @@ $script:Tools = @(
             'and start its editor without waiting. Call it as soon as you know the task needs the Unity editor, before ' +
             'planning or research (pull or switch branches first, while it is closed): the editor starts (12 s to minutes) ' +
             'while you read code, research and plan; edit Unity assets or scripts only after READY. Call wait_ready when ' +
-            'you actually need the editor, check through the Unity MCP that Application.dataPath is that slot, work there, ' +
+            'you actually need the editor, pin your Unity MCP to it with the set_active_instance call of the "pin" line ' +
+            '(MCP for Unity), check through the Unity MCP that Application.dataPath is that slot, work there, ' +
             'and call release when done. Several slots: take them together only while the commit is below the high mark ' +
             '(no "warn capacity" line), else one after another. "NO FREE SLOT" means none fits: show the plan from create ' +
             'to the user. Never switch a slot to another platform. If the result has a "warn capacity" line (editors at the ' +
@@ -110,7 +111,8 @@ $script:Tools = @(
             build_target = (New-Prop 'string' 'Platform for a first open (Android, WebGL, Windows). Refused if it would switch the platform.')
         }) @('slot') (New-Hints 'Open a slot editor' $false $false $true $false)),
     (New-Tool 'wait_ready' ('Call it when you actually need the editor, not right after acquire or open: until then do the ' +
-            'work that needs no editor. Waits up to timeout_sec (default 45, at most 55) for a starting editor. READY: go on. ' +
+            'work that needs no editor. Waits up to timeout_sec (default 45, at most 55) for a starting editor. READY: make ' +
+            'the set_active_instance call of the "pin" line before any Unity MCP call, then go on. ' +
             'STARTING: call again. STALLED (over 5 minutes): it lists the dialogs; hand it to the user, never click. ' +
             'NOT RUNNING: it is not open. If the result has a "warn capacity" line, tell the user.') ([ordered]@{
             slot        = (New-Prop 'string' 'Slot name or clone path.')
@@ -344,7 +346,8 @@ while ($true) {
                             'editor; if it does, pull or switch branches while it is closed, then call acquire(purpose, project) ' +
                             'before planning or research. It returns at once; while the editor starts, read code, research and ' +
                             'plan, but edit Unity assets or scripts only after READY. When you need the editor: wait_ready until ' +
-                            'READY -> check Application.dataPath through the Unity MCP -> work -> release(slot). Tell the user ' +
+                            'READY -> pin the Unity MCP to that editor (set_active_instance from the "pin" line, MCP for Unity) ' +
+                            '-> check Application.dataPath through the Unity MCP -> work -> release(slot). Tell the user ' +
                             'about "warn capacity" lines. Do not switch platforms, do not take slots leased by others, never ' +
                             'force anything; hand stalls to the user.')
                     })

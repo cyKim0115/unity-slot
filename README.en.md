@@ -100,7 +100,7 @@ A stalled editor is left as it is: unity-slot shows its windows and the `openSta
 | Command | What it does |
 |---|---|
 | `open <slot\|clone> [-BuildTarget <platform>] [-NoWait]` | Starts the editor if the clone is not open and waits until it is ready. `-NoWait` returns right after the launch; then call `wait`. |
-| `wait <slot\|clone> [-TimeoutSec 45]` | One bounded wait for a starting editor: READY, STARTING (exit 6), or stalled after 5 minutes (exit 2, with the editor's windows). The STARTING and stalled lines carry the last phase seen in Editor.log (starting the engine, script assemblies, asset refresh: packages, compiling scripts (%), reloading scripts, importing; opening the scene, finishing) and the number of import workers. |
+| `wait <slot\|clone> [-TimeoutSec 45]` | One bounded wait for a starting editor: READY, STARTING (exit 6), or stalled after 5 minutes (exit 2, with the editor's windows). The STARTING and stalled lines carry the last phase seen in Editor.log (starting the engine, script assemblies, asset refresh: packages, compiling scripts (%), reloading scripts, importing; opening the scene, finishing) and the number of import workers. Log tails (NOT RUNNING, stalled, timed out, EXITED) are masked first, then leave out `##utp` lines and cut each line at 300 characters. READY adds a `pin` line (see "Pinning the Unity MCP" below). |
 | `close <slot\|clone> [-AllowDirty]` | Runs the beforeClose hooks, asks the editor to quit (same as clicking X), waits, then reports child processes that still run and files git sees as written by the close or changed while it was open. |
 | `status [-Json] [-ShowCommandLine]` | Open editors with their child processes and memory (private / working set). |
 | `slots [<slot>] [-Project <repo>] [-Json]` | The registry with each slot's state and lease; a slot or `-Project` narrows it. |
@@ -242,6 +242,13 @@ Every result starts with `[unity-slot exit <code>: <meaning>, <seconds>s]`, for 
 
 Capacity warnings: before a closed slot's editor starts (open, acquire, new-clone) and again when it reports READY, unity-slot prints `warn capacity: ...` lines when the open editors reach `maxEditors` or the commit charge reaches `dashboard.commitHighPercent` (85) or `commitCriticalPercent` (90), the same thresholds as the dashboard's flags. It only warns: nothing is refused, exit codes and leases stay as they are, and the line asks the agent to tell the user. Acquiring a hot slot that is already open adds no editor and is not checked. Tests can set the commit charge with `UNITY_SLOT_COMMIT_OVERRIDE=<percent>`.
 
+Pinning the Unity MCP: [MCP for Unity](https://github.com/CoplayDev/unity-mcp) sends calls to the editor a session pinned, and with a single editor open the first call pins that one for the whole session, so a slot editor that opens later may not get the calls. acquire and READY therefore print a `pin` line with the editor's instance id (over MCP, `set_active_instance(instance="MyGame-2@1a2b3c4d")`). The id is `<project folder>@<hash>`, the hash being the first 8 hex digits of the SHA-1 of `Application.dataPath` in UTF-8 (forward slashes, ending in `/Assets`, upper-case drive letter). When a status file of that plugin (`%USERPROFILE%\.unity-mcp\unity-mcp-status-<hash>.json`) has the clone's `project_path`, its name and hash are used (tests point `UNITY_SLOT_UNITY_MCP_DIR` elsewhere).
+
+The usual list of instances is the plugin's instances resource, but Claude Code cannot read that server's resources. Instead:
+
+- Each `%USERPROFILE%\.unity-mcp\unity-mcp-status-<hash>.json` has `project_name`, `project_path`, `unity_port` and `last_heartbeat`, so `<project_name>@<hash>` gives the list.
+- `set_active_instance(instance="1")` with a port number no editor uses fails with `Available: Name@hash (port N)`, the list. The pin does not change.
+
 One piece of agent work goes like this:
 
 ```mermaid
@@ -258,6 +265,7 @@ sequenceDiagram
         A->>S: wait_ready
         S-->>A: STARTING · READY
     end
+    A->>U: set_active_instance(id of the pin line)
     A->>U: check Application.dataPath is that slot
     A->>U: work
     A->>S: release
@@ -288,7 +296,7 @@ tool_timeout_sec = 300
 
 The tools carry MCP annotations (protocol 2025-03-26 and later; a client on 2024-11-05 gets the tools without them): `status` and `wait_ready` are read-only; `acquire`, `open` and `create` change things but are not destructive (`create` reaches the network through `git clone`); `close` and `release` are marked destructive because they close an editor and `close` can drop unsaved changes with `discard_unsaved`. Hints do not grant anything: a client may still ask before a call, and in a non-interactive run (for example `codex exec`) the tools may need to be allowed in the client's approval settings.
 
-A rule for agents can be this short: "Decide first whether the task needs the Unity editor; if you are not sure, do not open one. If it does, pull or switch branches while it is closed, then acquire a slot (purpose, project) before planning or research. While the editor starts (12 s to minutes), read code, research and plan, but edit Unity assets or scripts only after READY. When you need the editor, call wait_ready until READY, check through your Unity MCP that `Application.dataPath` is that slot, work, then release it. Take several slots together only while the commit is below the high mark (no `warn capacity` line), else one after another. Never switch platforms, never take slots leased by others, hand stalls to the user."
+A rule for agents can be this short: "Decide first whether the task needs the Unity editor; if you are not sure, do not open one. If it does, pull or switch branches while it is closed, then acquire a slot (purpose, project) before planning or research. While the editor starts (12 s to minutes), read code, research and plan, but edit Unity assets or scripts only after READY. When you need the editor, call wait_ready until READY, pin your Unity MCP to it with the `set_active_instance` call of the `pin` line, check that `Application.dataPath` is that slot, work, then release it. Take several slots together only while the commit is below the high mark (no `warn capacity` line), else one after another. Never switch platforms, never take slots leased by others, hand stalls to the user."
 
 ## Dashboard JSON
 
@@ -304,7 +312,7 @@ A rule for agents can be this short: "Decide first whether the task needs the Un
 Two files in the state folder go with it:
 
 - **`events.jsonl`:** one line per `open`, `ready`, `close`, `acquire`, `release`, `renew`, `takeover` (an expired lease taken over) and `refused`, for example `{"time":"...","event":"close","slot":"MyGame-2","path":"...","owner":"claude:1a2b3c4d","pid":4120,"via":"cli","detail":{"closeSeconds":4.4,"commitDeltaGB":-7.8,"changedFiles":0}}`. `via` is `cli` or `mcp`. Above 1 MB it moves to `events-prev.jsonl`. `lastOpenedAt`, `lastClosedAt` and `recentEvents` come from it.
-- **`install.json`:** `{"script":"<full path of unity-slot.ps1>","version":"...","schema":1}`, refreshed by every run, so a widget finds the core without settings. When it points at another existing copy, only a newer version replaces it.
+- **`install.json`:** `{"script":"<full path of unity-slot.ps1>","version":"...","schema":1}`, refreshed by every run, so a widget finds the core without settings. While it points at another copy that exists, no other copy replaces it, newer or not (development checkouts run too). To move it, delete it; the next copy that runs takes it.
 
 ## Widget
 
@@ -329,6 +337,24 @@ Two files in the state folder go with it:
 ## Tested with
 
 Windows 10 22H2, Windows PowerShell 5.1, Unity 6000.6.0f1, two projects with several clones each on one machine (up to five editors open at a time). A warm open took 12 to 14 s, the first open after days about 60 s, a close 4 to 13 s. Other Unity versions and machines are untested; reports are welcome.
+
+## Tests
+
+`tests\run-tests.ps1` tests the core and the MCP server with a fake `Unity.exe` (a stub) instead of Unity. It never reads or writes the real registry, leases or events (`%USERPROFILE%\.unity-slot`). Nothing to install.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1                 # everything (3 to 4 minutes)
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1 -Phase 1        # current behavior only
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1 -Only '^close\.' -KeepRoot
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1 -List
+```
+
+- **Stub.** `tests\stub\UnityStub.cs` is built with the .NET Framework compiler that ships with Windows (`csc.exe`). It reads `-projectPath`, `-logFile`, `-standbyWorkerCount` and `-buildTarget` and imitates a Unity-style window title, `Temp\UnityLockfile`, the `##utp` `ProjectInfo` line in Editor.log, closing on X (CloseMainWindow), dialogs with native buttons, the scene beacon and import workers (`-parentPid`). Its behavior comes from a control file in the clone, `Temp\unity-stub.txt`: `normal`, `never-ready`, `dialog`, `slow-close`, `ignore-close`, `dirty`, `exit-early`. A process started through WMI does not get the caller's environment, so there are no environment switches.
+- **Isolation.** The test folder (default `%TEMP%\unity-slot-tests\<time>`) holds the stub, a local bare origin and fake clones (`MyGame`, `MyGame-1`, `MyGame-2`, `MyGame-Web`); each group gets its own `UNITY_SLOT_HOME` and `UNITY_SLOT_CONFIG`. The fake clones use Unity version `9999.0.0f1`, so no real editor can open. Before and after a run it checks that the real `slots.json` and `install.json` kept their time stamp and hash.
+- **Groups.** `lease` (leases, races, taking over expired leases, no free slot, hot slots), `close` (refused close, timeouts, batchmode, lock file), `start` (STARTING, STALLED, the dialog list, `-TimeoutSec`, versions, platforms), `report` (`events.jsonl`, the `install.json` pointer, the dashboard, secrets), `mcp` (protocol, a lease flow), `phase2` (MCP next steps, call times, annotations, the status summary, capacity warnings, startup phases; improvements not in the core yet are SKIP). Groups run in separate processes, three at a time; the tests of a group run one after another.
+- **Results.** Each test prints PASS, FAIL, KNOWN or SKIP and its time; exit 0 when nothing failed. KNOWN marks a reproduction of a core problem listed in [tests/FINDINGS.md](tests/FINDINGS.md). When everything passed the test folder is deleted, otherwise it stays (`envs\<group>\cli.log` has the output of every run).
+- **Rules kept.** No process is killed, stubs included: a test asks a stub to end through its control file, and a stub that does not end is only reported (it ends by itself after 10 minutes). Dialogs are listed, never clicked. Stub windows open off screen without taking the focus, and they make no sound.
+- **App-package shells.** A shell of an app installed as an MSIX package writes to AppData through a private copy, which a stub started through WMI cannot see. From such a shell the run refuses a test folder under AppData; pass `-Root` with another folder.
 
 ## License
 

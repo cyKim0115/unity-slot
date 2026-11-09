@@ -144,7 +144,11 @@ function ConvertTo-LeaseJson($SlotName, $Lease) {
 }
 
 # Returns the new lease, or $null when someone else got there first.
-function New-SlotLease($Slot, [string]$OwnerId, [string]$Need, [double]$HoursValue, [bool]$ReplaceExpired, $Client = $null) {
+# A free slot: the lease file is created with CreateNew, so only one process can make it.
+# An expired lease: the file is opened without sharing and replaced only while it still holds the
+# expired lease this process saw ($ExpectedNonce, its nonce) and that lease is still expired, so two
+# processes that saw the same expired lease cannot both take it over (tests\FINDINGS.md F4).
+function New-SlotLease($Slot, [string]$OwnerId, [string]$Need, [double]$HoursValue, [bool]$ReplaceExpired, $Client = $null, [string]$ExpectedNonce = '') {
     $dir = Get-LeaseDir
     if (-not (Test-Path -LiteralPath $dir)) { [void](New-Item -ItemType Directory -Path $dir -Force) }
     $now = Get-Date
@@ -165,14 +169,33 @@ function New-SlotLease($Slot, [string]$OwnerId, [string]$Need, [double]$HoursVal
             return $null
         }
     }
-    # Taking over an expired lease: write, wait, and check that our nonce is the one that stayed.
-    $tmp = '{0}.{1}.tmp' -f $file, $lease.nonce
-    [IO.File]::WriteAllBytes($tmp, $bytes)
-    Move-Item -LiteralPath $tmp -Destination $file -Force
-    Start-Sleep -Milliseconds 300
-    $check = Get-SlotLease $Slot.name
-    if ($null -ne $check -and $check.nonce -eq $lease.nonce) { return $lease }
-    return $null
+    $fs = $null
+    for ($try = 0; $try -lt 20 -and $null -eq $fs; $try++) {
+        try { $fs = [IO.File]::Open($file, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+        catch [IO.FileNotFoundException] { return $null }
+        catch [IO.IOException] { Start-Sleep -Milliseconds 50 }
+    }
+    if ($null -eq $fs) { return $null }
+    try {
+        $buf = New-Object byte[] ([int]$fs.Length)
+        $read = 0
+        while ($read -lt $buf.Length) {
+            $n = $fs.Read($buf, $read, $buf.Length - $read)
+            if ($n -le 0) { break }
+            $read += $n
+        }
+        $cur = $null
+        try { $cur = [Text.Encoding]::UTF8.GetString($buf, 0, $read) | ConvertFrom-Json } catch { }
+        # someone else replaced or renewed it after this process looked
+        if ([string](Get-Prop $cur 'nonce') -ne $ExpectedNonce) { return $null }
+        $exp = [string](Get-Prop $cur 'expiresAt')
+        if ($exp -and [datetime]::Parse($exp, $script:Inv, [Globalization.DateTimeStyles]::RoundtripKind) -ge (Get-Date)) { return $null }
+        $fs.SetLength(0)
+        $fs.Write($bytes, 0, $bytes.Length)
+        return $lease
+    } finally {
+        $fs.Dispose()
+    }
 }
 
 function Update-SlotLease([string]$SlotName, $Lease) {
@@ -257,10 +280,14 @@ function Invoke-Acquire {
             Update-SlotLease $c.Slot.name $existing
             $chosen = $c; $lease = $existing
             Say ('lease   already yours; extended to {0}' -f (Format-Time $existing.expiresAt))
+            # the same as renew, so it is logged like one (tests\FINDINGS.md F2)
+            Write-SlotEvent 'renew' $c.Slot.path $c.State.EditorPid ([ordered]@{ expiresAt = (Format-Iso $existing.expiresAt); by = 'acquire' }) $ownerId
             break
         }
         $replace = ($null -ne $existing -and $existing.Expired)
-        $lease = New-SlotLease $c.Slot $ownerId $need (Get-LeaseHours) $replace $client
+        $seenNonce = ''
+        if ($replace) { $seenNonce = [string]$existing.nonce }
+        $lease = New-SlotLease $c.Slot $ownerId $need (Get-LeaseHours) $replace $client $seenNonce
         if ($null -ne $lease) {
             $chosen = $c
             if ($replace) {
@@ -311,6 +338,7 @@ function Invoke-Acquire {
     }
     Say ('ACQUIRED {0}: {1}; work in {2}' -f $slot.name, $state, $slot.path)
     $releaseCall = Format-ToolCall 'release' @('slot', $slot.name, 'owner', (Get-OwnerArg $lease.owner))
+    Say (Format-PinLine $slot.path)
     if ($mcp -and $starting) {
         Say ('next    while it starts, do the work that needs no editor (read code, research, plan; no Unity asset or script edits yet); when you need the editor: {0}, then check with your Unity MCP that Application.dataPath is "{1}/Assets"; when done: {2}' -f (Format-ToolCall 'wait_ready' @('slot', $slot.name)), $slot.path.Replace('\', '/'), $releaseCall)
     } elseif ($mcp) {

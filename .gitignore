@@ -1,3 +1,5 @@
 # personal settings and overlay (README: Personal overlay)
 /config.json
 /private/
+# the test stub built by hand (tests\stub\build.ps1)
+/tests/stub/bin/
