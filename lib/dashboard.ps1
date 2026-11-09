@@ -321,7 +321,11 @@ function Get-GitRepoStats([string]$Clone, [string]$CommonDir) {
 
 # ------------------------------------------------------------------ dashboard (R1)
 
+# -Shallow (the summary only) skips what the summary table does not show: git, the event history and
+# memory trees. States, leases and flags still come from the code below. -AsObject returns the
+# document instead of printing it. The dashboard command uses neither, so its JSON is unchanged.
 function Invoke-Dashboard {
+    param([switch]$Shallow, [switch]$AsObject)
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $full = ($GitLevel -eq 'full')
     $reg = Read-Registry
@@ -341,7 +345,8 @@ function Invoke-Dashboard {
     $editorsOpen = @($snap.Unity | Where-Object { $_.Kind -eq 'editor' }).Count
 
     # last open / close per slot from the event log (a light regex pass; full parse only for the recent ones)
-    $events = @(Read-EventLines)
+    $events = @()
+    if (-not $Shallow) { $events = @(Read-EventLines) }
     $lastOpen = @{}
     $lastClose = @{}
     $evRx = New-Object Text.RegularExpressions.Regex('^\{"time":"([^"]+)","event":"([a-z]+)","slot":"((?:[^"\\]|\\.)*)"')
@@ -385,13 +390,15 @@ function Invoke-Dashboard {
             if ($editor.unsavedScene -eq $true) { $flags.Add('unsaved-scene') }
         } elseif ((Get-LockState $s.path) -eq 'held') { $flags.Add('stale-lock') }
         if ($null -ne $proc) {
-            $tree = Get-EditorTree $snap $proc.Pid
             $editor.pid = $proc.Pid
             $editor.startedAt = Format-Iso $proc.Started
-            $editor.memory = [ordered]@{
-                editorPrivGB = (ConvertTo-GB $tree.EditorPriv); workersPrivGB = (ConvertTo-GB $tree.WorkerPriv)
-                childrenPrivGB = (ConvertTo-GB $tree.OtherPriv); totalPrivGB = (ConvertTo-GB $tree.TotalPriv)
-                totalWsGB = (ConvertTo-GB $tree.TotalWs); workers = $tree.WorkerCount; children = $tree.OtherCount
+            if (-not $Shallow) {
+                $tree = Get-EditorTree $snap $proc.Pid
+                $editor.memory = [ordered]@{
+                    editorPrivGB = (ConvertTo-GB $tree.EditorPriv); workersPrivGB = (ConvertTo-GB $tree.WorkerPriv)
+                    childrenPrivGB = (ConvertTo-GB $tree.OtherPriv); totalPrivGB = (ConvertTo-GB $tree.TotalPriv)
+                    totalWsGB = (ConvertTo-GB $tree.TotalWs); workers = $tree.WorkerCount; children = $tree.OtherCount
+                }
             }
         }
         $isOpen = ($null -ne $proc -and $editor.state -ne 'batch')
@@ -400,13 +407,19 @@ function Invoke-Dashboard {
         $l = Get-SlotLease $s.name
         if ($null -ne $l) {
             $lease = [ordered]@{ owner = $l.owner; need = $l.need; acquiredAt = (Format-Iso $l.acquiredAt); expiresAt = (Format-Iso $l.expiresAt)
-                expired = [bool]$l.Expired; openedByAcquire = [bool]$l.openedByAcquire; host = $l.host }
+                expired = [bool]$l.Expired; openedByAcquire = [bool]$l.openedByAcquire; host = $l.host; client = $null }
+            # MCP leases record the client process (Claude Code, Codex, Cursor); gone = orphaned lease
+            $alive = Test-LeaseClientAlive $l $snap
+            if ($null -ne $alive) {
+                $lease.client = [ordered]@{ name = $l.clientName; pid = $l.clientPid; startedAt = (Format-Iso $l.clientStartedAt); alive = [bool]$alive }
+                if (-not $alive) { $flags.Add('lease-client-gone') }
+            }
             if ($l.Expired -and $isOpen) { $flags.Add('lease-expired-open') }
             elseif (-not $l.Expired -and $null -ne $l.expiresAt -and ([datetime]$l.expiresAt - $now).TotalMinutes -le $expiringMin) { $flags.Add('lease-expiring') }
         } elseif ($isOpen -and $s.mode -ne 'hot') { $flags.Add('open-without-lease') }
 
         $git = $null
-        if ($exists) {
+        if ($exists -and -not $Shallow) {
             $gitWatch.Start()
             $b = Get-GitBasic $s.path
             $common = Get-GitCommonDir $s.path
@@ -485,6 +498,7 @@ function Invoke-Dashboard {
         systemFlags         = $sysFlags.ToArray()
         timing              = [ordered]@{ totalMs = $sw.ElapsedMilliseconds; processMs = $processMs; gitMs = $gitWatch.ElapsedMilliseconds }
     }
+    if ($AsObject) { return $doc }
     [Console]::Out.Write(($doc | ConvertTo-Json -Compress -Depth 12) + "`n")
     [Console]::Out.Flush()
 }

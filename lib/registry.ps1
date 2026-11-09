@@ -440,16 +440,43 @@ function Invoke-Scan {
     }
 }
 
+# slots, summary: an optional slot (name or path) and -Project narrow the list.
+# Loops instead of @($Reg.slots): PowerShell 5.1 throws "Argument types do not match" on that List.
+function Select-RegistrySlots($Reg) {
+    $one = $null
+    if (-not [string]::IsNullOrWhiteSpace($Target)) {
+        $one = Find-Slot $Reg $Target
+        if ($null -eq $one) {
+            if (Test-ViaMcp) { throw ('no registered slot named or located at "{0}". See status().' -f $Target) }
+            throw ('no registered slot named or located at "{0}". See: unity-slot slots' -f $Target)
+        }
+    }
+    $filters = @(Get-ProjectFilters)
+    $list = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($s in $Reg.slots) {
+        if ($null -ne $one -and -not [object]::ReferenceEquals($s, $one)) { continue }
+        if ($filters.Count -gt 0) {
+            $hit = $false
+            foreach ($f in $filters) { if (Test-SlotProject $s $f) { $hit = $true } }
+            if (-not $hit) { continue }
+        }
+        $list.Add($s)
+    }
+    return $list.ToArray()
+}
+
 function Invoke-Slots {
     $reg = Read-Registry
     if ($reg.slots.Count -eq 0) {
-        Say ('no slots registered yet ({0}). Run: unity-slot scan -Project <owner/repo> -Apply' -f (Get-RegistryPath))
+        if (Test-ViaMcp) { Say ('no slots registered yet ({0}). Ask the user to register the clones (scan).' -f (Get-RegistryPath)) }
+        else { Say ('no slots registered yet ({0}). Run: unity-slot scan -Project <owner/repo> -Apply' -f (Get-RegistryPath)) }
         return
     }
+    $selected = @(Select-RegistrySlots $reg)
     $snap = Get-Snapshot
     $rows = New-Object 'System.Collections.Generic.List[object]'
     $items = New-Object 'System.Collections.Generic.List[object]'
-    foreach ($s in $reg.slots) {
+    foreach ($s in $selected) {
         $st = Get-SlotState $s $snap
         $rows.Add(@($s.name, $s.platform, $s.branch, $s.mode, $s.agentUse.ToString().ToLowerInvariant(), (@($s.purposes) -join ','), $st.Text, (Format-Lease $st.Lease), $s.project))
         $leaseOut = $null
@@ -470,7 +497,7 @@ function Invoke-Slots {
     Write-TextTable @('Name', 'Platform', 'Branch', 'Mode', 'Agent', 'Purposes', 'State', 'Lease', 'Project') $rows
     $editors = @($snap.Unity | Where-Object { $_.Kind -eq 'editor' }).Count
     Say ('editors {0} open of max {1}; registry {2}' -f $editors, $reg.maxEditors, (Get-RegistryPath))
-    foreach ($s in $reg.slots) { if ($s.memo) { Say ('memo    {0}: {1}' -f $s.name, $s.memo) } }
+    foreach ($s in $selected) { if ($s.memo) { Say ('memo    {0}: {1}' -f $s.name, $s.memo) } }
 }
 
 function Invoke-Set {

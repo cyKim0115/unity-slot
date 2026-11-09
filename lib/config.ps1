@@ -29,7 +29,7 @@ $script:HookEventHelp = [ordered]@{
     afterClone     = 'new-clone made and registered a clone (before its first open)'
     afterFirstOpen = 'a new clone''s editor is READY for the first time (new-clone, open or wait)'
 }
-$script:BuiltinCommands = @('open', 'wait', 'close', 'status', 'slots', 'scan', 'set', 'acquire', 'release', 'renew', 'new-clone', 'hooks', 'dashboard')
+$script:BuiltinCommands = @('open', 'wait', 'close', 'status', 'slots', 'summary', 'scan', 'set', 'acquire', 'release', 'renew', 'new-clone', 'hooks', 'dashboard')
 $script:ConfigCache = $null
 $script:ConfigFileUsed = $null
 $script:Utf8NoBom = New-Object Text.UTF8Encoding($false)
@@ -301,9 +301,42 @@ function Invoke-PendingHooks([string]$Clone, [int]$EditorPid, [string]$Log) {
         $r = Invoke-SlotHooks $ev (Get-HookVars $Clone $EditorPid $Log)
         if ($r.Failed.Count -gt 0 -or $r.Refused.Count -gt 0) {
             $script:PendingHooksFailed = $true
-            Say ('warn    {0} hook(s) did not succeed: {1}. Run them again: unity-slot hooks {2} -HookEvent {0}' -f $ev, ((@($r.Failed) + @($r.Refused)) -join ', '), $slot.name)
+            if (Test-ViaMcp) {
+                Say ('warn    {0} hook(s) did not succeed: {1}. Tell the user; they can run the {0} hooks of {2} again.' -f $ev, ((@($r.Failed) + @($r.Refused)) -join ', '), $slot.name)
+            } else {
+                Say ('warn    {0} hook(s) did not succeed: {1}. Run them again: unity-slot hooks {2} -HookEvent {0}' -f $ev, ((@($r.Failed) + @($r.Refused)) -join ', '), $slot.name)
+            }
         }
     }
+}
+
+# ------------------------------------------------------------------ wording for MCP callers
+
+# Under the MCP server (UNITY_SLOT_VIA=mcp) a next step names the MCP tool, e.g. wait_ready(slot="X"),
+# instead of a CLI command. The CLI wording stays exactly as it is.
+function Test-ViaMcp { return ([string]$env:UNITY_SLOT_VIA -eq 'mcp') }
+
+# tool(name="value", ...); pairs with an empty value are left out.
+function Format-ToolCall([string]$Tool, [object[]]$Pairs) {
+    $parts = New-Object 'System.Collections.Generic.List[string]'
+    for ($i = 0; $i + 1 -lt $Pairs.Count; $i += 2) {
+        $v = [string]$Pairs[$i + 1]
+        if ($v) { $parts.Add(('{0}="{1}"' -f $Pairs[$i], $v.Replace('"', '\"'))) }
+    }
+    return ('{0}({1})' -f $Tool, ($parts -join ', '))
+}
+
+# The owner argument only when it differs from the MCP session's own default (the server passes it
+# as UNITY_SLOT_MCP_OWNER), so a tool call shown to the agent stays as short as it can be.
+function Get-OwnerArg([string]$OwnerId) {
+    if ($OwnerId -and $OwnerId -ne [string]$env:UNITY_SLOT_MCP_OWNER) { return $OwnerId }
+    return ''
+}
+
+# Slot name for a clone path (the path itself when it is not registered).
+function Get-SlotLabel([string]$Clone) {
+    try { foreach ($s in (Read-Registry).slots) { if (Test-SamePath $s.path $Clone) { return $s.name } } } catch { }
+    return $Clone
 }
 
 # ------------------------------------------------------------------ extra commands

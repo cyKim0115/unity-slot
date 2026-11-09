@@ -63,7 +63,7 @@ function Get-NextCloneName($Reg, [string]$RepoName, [string]$Root) {
 }
 
 function Invoke-NewClone {
-    if ([string]::IsNullOrWhiteSpace($Target)) { throw 'usage: unity-slot new-clone <purpose or platform> [-Project <repo>] [-From <slot>] [-Name <folder>] [-Apply]' }
+    if ([string]::IsNullOrWhiteSpace($Target)) { throw 'usage: unity-slot new-clone <purpose or platform> [-Project <repo>] [-From <slot>] [-Name <repo>-<n>] [-Apply]' }
     $need = $Target.Trim()
     $projectFilter = Get-ProjectFilter
     $reg = Read-Registry
@@ -76,9 +76,15 @@ function Invoke-NewClone {
         if ($null -eq $template) { throw ('no registered slot "{0}"' -f $From) }
     } else {
         $cands = @($reg.slots | Where-Object { (Test-SlotNeed $_ $need) -and (Test-SlotProject $_ $projectFilter) -and (Test-Path -LiteralPath $_.path -PathType Container) })
-        if ($cands.Count -eq 0) { throw ('no registered slot fits "{0}" to copy from. Pass -From <slot>.' -f $need) }
+        if ($cands.Count -eq 0) {
+            if (Test-ViaMcp) { throw ('no registered slot fits "{0}" to copy from. Pass from="<slot>".' -f $need) }
+            throw ('no registered slot fits "{0}" to copy from. Pass -From <slot>.' -f $need)
+        }
         $projects = @($cands | ForEach-Object { $_.project } | Select-Object -Unique)
-        if ($projects.Count -gt 1) { throw ('"{0}" matches {1} projects ({2}). Add -Project <repo>.' -f $need, $projects.Count, ($projects -join ', ')) }
+        if ($projects.Count -gt 1) {
+            if (Test-ViaMcp) { throw ('"{0}" matches {1} projects ({2}). Add project="<repo>".' -f $need, $projects.Count, ($projects -join ', ')) }
+            throw ('"{0}" matches {1} projects ({2}). Add -Project <repo>.' -f $need, $projects.Count, ($projects -join ', '))
+        }
         $ranked = @($cands | ForEach-Object {
                 $st = Get-SlotState $_ $snap
                 [pscustomobject]@{ Slot = $_; Closed = ($st.EditorPid -eq 0 -and -not $st.Batch); Agent = [bool]$_.agentUse; LastUsed = (Get-LastUsed $_.path) }
@@ -104,13 +110,21 @@ function Invoke-NewClone {
 
     Say ('need    {0} ({1})' -f $need, $template.project)
     Say ('from    {0}: {1}, {2}, {3}' -f $template.name, $platform, $branch, $tplState.Text)
-    Say ('to      {0}' -f $dest)
+    # Names stay generic, <repo>-<smallest free number>: no branch, feature, platform, agent or date
+    # (the registry keeps purposes, platform and branch, and a name cannot follow them when they change).
+    Say ('to      {0} (generic name {1}-<smallest free number>)' -f $dest, $repoName)
 
     # checks
     $stop = New-Object 'System.Collections.Generic.List[string]'
+    if ($Name -and $Name -notmatch ('^' + [regex]::Escape($repoName) + '-\d+$')) {
+        $stop.Add(('-Name {0} is not a generic name: new clones are named {1}-<number> (no branch, feature, platform, agent or date; the registry keeps those)' -f $Name, $repoName))
+    }
     if (Test-Path -LiteralPath $dest) { $stop.Add("$dest already exists") }
     if (-not $facts.Origin) { $stop.Add('the template has no origin remote') }
-    if (-not $platform) { $stop.Add('the template platform is unknown (unity-slot set <slot> -BuildTarget <platform>)') }
+    if (-not $platform) {
+        if (Test-ViaMcp) { $stop.Add('the template platform is unknown (ask the user to set it for that slot)') }
+        else { $stop.Add('the template platform is unknown (unity-slot set <slot> -BuildTarget <platform>)') }
+    }
     $upstream = [string](@(Invoke-Git $template.path @('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}')) | Select-Object -First 1)
     if (-not $upstream) {
         Say ('warn    branch {0} has no upstream; it may not exist on origin' -f $branch)
@@ -165,7 +179,11 @@ function Invoke-NewClone {
     else { Say '  4. (none) afterClone hooks' }
     $firstOpenHooks = '(no afterFirstOpen hooks)'
     if ($afterFirstOpen.Count -gt 0) { $firstOpenHooks = 'then afterFirstOpen hooks: ' + ($afterFirstOpen -join ', ') + $hookNote }
-    if ($NoOpen) { Say ('  5. (later) first open with -BuildTarget {0}; when it is READY: {1}' -f (Get-BuildTargetName $platform), $firstOpenHooks) }
+    if ($NoOpen -and (Test-ViaMcp)) {
+        Say ('  5. (later) {0}, then {1}; when it is READY: {2}' -f (Format-ToolCall 'open' @('slot', $folder, 'build_target', (Get-BuildTargetName $platform))), (Format-ToolCall 'wait_ready' @('slot', $folder)), $firstOpenHooks)
+    }
+    elseif ($NoOpen) { Say ('  5. (later) first open with -BuildTarget {0}; when it is READY: {1}' -f (Get-BuildTargetName $platform), $firstOpenHooks) }
+    elseif (Test-ViaMcp) { Say ('  5. first open with build target {0} (waits up to {1} min), {2}' -f (Get-BuildTargetName $platform), [int]($openTimeout / 60), $firstOpenHooks) }
     else { Say ('  5. unity-slot open "{0}" -BuildTarget {1} (waits up to {2} min), {3}' -f $dest, (Get-BuildTargetName $platform), [int]($openTimeout / 60), $firstOpenHooks) }
 
     if ($stop.Count -gt 0) {
@@ -174,7 +192,8 @@ function Invoke-NewClone {
         return
     }
     if (-not $Apply) {
-        Say 'dry-run: nothing was created. Show this plan to the user; after they agree, run the same command with -Apply.'
+        if (Test-ViaMcp) { Say 'dry-run: nothing was created. Show this plan to the user; after they agree, call create again with the same arguments and confirm=true.' }
+        else { Say 'dry-run: nothing was created. Show this plan to the user; after they agree, run the same command with -Apply.' }
         return
     }
 
@@ -226,11 +245,20 @@ function Invoke-NewClone {
     $vars.template = $template.path
     $cloneHooks = Invoke-SlotHooks 'afterClone' $vars
     if ($cloneHooks.Failed.Count -gt 0 -or $cloneHooks.Refused.Count -gt 0) {
-        Say ('warn    afterClone hook(s) did not succeed: {0}. The clone stays; fix it by hand or run: unity-slot hooks {1} -HookEvent afterClone' -f ((@($cloneHooks.Failed) + @($cloneHooks.Refused)) -join ', '), $rec.name)
+        if (Test-ViaMcp) {
+            Say ('warn    afterClone hook(s) did not succeed: {0}. The clone stays; tell the user (they can fix it by hand or run the afterClone hooks of {1} again).' -f ((@($cloneHooks.Failed) + @($cloneHooks.Refused)) -join ', '), $rec.name)
+        } else {
+            Say ('warn    afterClone hook(s) did not succeed: {0}. The clone stays; fix it by hand or run: unity-slot hooks {1} -HookEvent afterClone' -f ((@($cloneHooks.Failed) + @($cloneHooks.Refused)) -join ', '), $rec.name)
+        }
     }
 
     if ($NoOpen) {
         $later = ''
+        if (Test-ViaMcp) {
+            if (@($rec.pendingHooks).Count -gt 0) { $later = ' The afterFirstOpen hooks run when that editor is first READY.' }
+            Say ('CREATED {0}. First open: {1}, then {2}.{3}' -f $rec.name, (Format-ToolCall 'open' @('slot', $rec.name, 'build_target', (Get-BuildTargetName $platform))), (Format-ToolCall 'wait_ready' @('slot', $rec.name)), $later)
+            return
+        }
         if (@($rec.pendingHooks).Count -gt 0) { $later = ' The afterFirstOpen hooks run when that editor is first READY (open/wait/acquire).' }
         Say ('CREATED {0}. First open later: unity-slot open "{1}" -BuildTarget {2}.{3}' -f $rec.name, $dest, (Get-BuildTargetName $platform), $later)
         return
@@ -239,7 +267,8 @@ function Invoke-NewClone {
     $script:PendingHooksFailed = $false
     Invoke-Open $dest $openTimeout (Get-BuildTargetName $platform)
     if ($script:ExitCode -ne 0) {
-        Say ('first open did not finish (exit {0}); the clone and slot stay as they are. The afterFirstOpen hooks run when it is first READY (unity-slot wait {1}).' -f $script:ExitCode, $rec.name)
+        if (Test-ViaMcp) { Say ('first open did not finish (exit {0}); the clone and slot stay as they are. The afterFirstOpen hooks run when it is first READY ({1}).' -f $script:ExitCode, (Format-ToolCall 'wait_ready' @('slot', $rec.name))) }
+        else { Say ('first open did not finish (exit {0}); the clone and slot stay as they are. The afterFirstOpen hooks run when it is first READY (unity-slot wait {1}).' -f $script:ExitCode, $rec.name) }
         return
     }
     if ($script:PendingHooksFailed) {

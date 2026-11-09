@@ -7,13 +7,14 @@ Open and close Unity editors for clone folders on demand, and show what is open.
   unity-slot.ps1 wait      <clone|slot> [-TimeoutSec 45]
   unity-slot.ps1 close     <clone|slot> [-TimeoutSec 240] [-AllowDirty]
   unity-slot.ps1 status    [-Json] [-ShowCommandLine]
-  unity-slot.ps1 slots     [-Json]
+  unity-slot.ps1 slots     [<slot>] [-Project <repo>] [-Json]
+  unity-slot.ps1 summary   [<slot>] [-Project <repo>]
   unity-slot.ps1 scan      [-Project <owner/repo>[,...]] [-ScanRoot <dir>[,...]] [-Apply]
   unity-slot.ps1 set       <slot> [-Purpose a,b] [-Mode hot|ondemand] [-AgentUse true|false] [-Memo <text>]
   unity-slot.ps1 acquire   <purpose|platform> [-Project <repo>] [-Owner <id>] [-Hours 8] [-NoOpen | -NoWait]
   unity-slot.ps1 release   <slot> [-Owner <id>] [-KeepOpen] [-AnyOwner]
   unity-slot.ps1 renew     <slot> [-Owner <id>] [-Hours 8]
-  unity-slot.ps1 new-clone <purpose|platform> [-Project <repo>] [-From <slot>] [-Name <folder>]
+  unity-slot.ps1 new-clone <purpose|platform> [-Project <repo>] [-From <slot>] [-Name <repo>-<n>]
                            [-CloneRoot <dir>] [-NoOpen] [-Apply]
   unity-slot.ps1 hooks     [<slot|clone> -HookEvent <event>]
   unity-slot.ps1 dashboard -Json [-Git basic|full]
@@ -31,7 +32,9 @@ wait      One bounded look (-TimeoutSec, default 45) at a starting editor: READY
 close     Runs the beforeClose hooks, asks the main window to close (same as clicking X), waits,
           then reports what git sees as written by the close and which child processes still run.
 status    Lists open editors with their child processes (import workers, compiler server, ...).
-slots     The slot registry with each slot's state and lease (lib\registry.ps1).
+slots     The slot registry with each slot's state and lease (lib\registry.ps1); a slot or -Project narrows it.
+summary   One short table (slot, platform, mode, state, lease, agent use) and the warnings, with the
+          dashboard's states and flags (lib\summary.ps1). The MCP status tool shows this by default.
 scan      Detects version, branch, platform of clones under the scan roots and updates the registry.
 set       Changes the user fields of a slot (purposes, mode, agent use, memo).
 acquire   Leases a free slot that fits, then opens its editor (lib\lease.ps1). Exit 5: none free.
@@ -134,9 +137,10 @@ param(
     [switch]$Apply
 )
 
-$script:UnitySlotVersion = '0.4.0'
+$script:UnitySlotVersion = '0.5.5'
 $script:ExitCode = 0
 $script:LastOpenPid = 0
+$script:LastStartupPhase = $null
 $script:PendingHooksFailed = $false
 $script:LastCloseDetail = $null
 $script:Bound = $PSBoundParameters
@@ -144,7 +148,7 @@ $script:Inv = [Globalization.CultureInfo]::InvariantCulture
 $script:SecretFlags = 'accessToken|hubSessionId|cbmEditorLicense|cbmMachineId'
 
 $script:SlotRepo = $PSScriptRoot
-foreach ($lib in @('config', 'registry', 'lease', 'newclone', 'dashboard')) { . (Join-Path $PSScriptRoot ('lib\' + $lib + '.ps1')) }
+foreach ($lib in @('config', 'registry', 'lease', 'newclone', 'dashboard', 'summary')) { . (Join-Path $PSScriptRoot ('lib\' + $lib + '.ps1')) }
 
 # ------------------------------------------------------------------ output and masking
 
@@ -399,10 +403,20 @@ function Wait-Exit([int[]]$Pids, [datetime]$Deadline) {
 
 # ------------------------------------------------------------------ memory, lock, git, beacon
 
+# UNITY_SLOT_COMMIT_OVERRIDE=<percent> (tests only, 0 to 100) replaces the measured commit charge
+# for everything that reads it (open, status, dashboard, summary, capacity warnings); the used GB
+# follows from the real commit limit.
 function Get-CommitInfo {
     $os = Get-CimInstance -ClassName Win32_OperatingSystem -Property TotalVirtualMemorySize, FreeVirtualMemory, FreePhysicalMemory
     $limit = [double]$os.TotalVirtualMemorySize * 1KB
     $used = $limit - [double]$os.FreeVirtualMemory * 1KB
+    $override = [string]$env:UNITY_SLOT_COMMIT_OVERRIDE
+    if ($override.Trim()) {
+        $p = 0.0
+        if ([double]::TryParse($override.Trim().TrimEnd('%'), [Globalization.NumberStyles]::Float, $script:Inv, [ref]$p) -and $p -ge 0 -and $p -le 100) {
+            $used = $limit * $p / 100
+        }
+    }
     return [pscustomobject]@{
         UsedGB         = [math]::Round($used / 1GB, 2)
         LimitGB        = [math]::Round($limit / 1GB, 2)
@@ -413,6 +427,43 @@ function Get-CommitInfo {
 
 function Format-Commit($C) {
     return ('{0} / {1} GB ({2}%), free physical {3} GB' -f (Format-Num $C.UsedGB), (Format-Num $C.LimitGB), $C.Percent, (Format-Num $C.FreePhysicalGB))
+}
+
+# Capacity warnings (warn only: no refusal, exit codes and leases unchanged). The thresholds are the
+# dashboard's (config "dashboard": commitHighPercent, commitCriticalPercent) and maxEditors, so the
+# warnings and the dashboard's commit-high / commit-critical / editors-at-max flags agree.
+# BeforeOpen: a closed slot's editor is about to start; otherwise the editor just became READY.
+function Get-CapacityWarnings([int]$EditorsOpen, [int]$MaxEditors, $Commit, [bool]$BeforeOpen) {
+    $dash = Get-Setting 'dashboard'
+    $high = [int](Get-Prop $dash 'commitHighPercent')
+    if ($high -le 0) { $high = 85 }
+    $crit = [int](Get-Prop $dash 'commitCriticalPercent')
+    if ($crit -le 0) { $crit = 90 }
+    $tail = 'Tell the user.'
+    if ($BeforeOpen) { $tail = 'Tell the user before opening more.' }
+    $out = New-Object 'System.Collections.Generic.List[string]'
+    if ($MaxEditors -gt 0 -and $EditorsOpen -ge $MaxEditors) {
+        if ($BeforeOpen) { $out.Add(('warn capacity: {0} editors are already open (maxEditors {1}); this one makes {2}. {3}' -f $EditorsOpen, $MaxEditors, ($EditorsOpen + 1), $tail)) }
+        else { $out.Add(('warn capacity: {0} editors are open (maxEditors {1}). {2}' -f $EditorsOpen, $MaxEditors, $tail)) }
+    }
+    $level = ''
+    $from = 0
+    if ($Commit.Percent -ge $crit) { $level = 'critical'; $from = $crit }
+    elseif ($Commit.Percent -ge $high) { $level = 'high'; $from = $high }
+    if ($level) {
+        $out.Add(('warn capacity: commit {0}% ({1} / {2} GB) is {3} (from {4}%), free physical {5} GB. {6}' -f $Commit.Percent,
+                (Format-Num $Commit.UsedGB), (Format-Num $Commit.LimitGB), $level, $from, (Format-Num $Commit.FreePhysicalGB), $tail))
+    }
+    return $out.ToArray()
+}
+
+function Write-CapacityWarnings($Snap, $Commit, [bool]$BeforeOpen) {
+    try {
+        $max = 6
+        try { $max = [int](Read-Registry).maxEditors } catch { }
+        $open = @($Snap.Unity | Where-Object { $_.Kind -eq 'editor' }).Count
+        foreach ($w in @(Get-CapacityWarnings $open $max $Commit $BeforeOpen)) { Say $w }
+    } catch { }
 }
 
 # Unity keeps Temp\UnityLockfile open without sharing while the project is open.
@@ -573,6 +624,51 @@ function Get-ProjectInfo([string]$Line, [int]$EditorPid) {
     return $obj
 }
 
+# Startup phase for the STARTING, TIMEOUT and STALLED? lines and the CLI "waiting" note: the last
+# marker among the Editor.log lines Wait-EditorReady reads anyway (no second pass over the log).
+# Markers as Unity 6000.6 prints them; before the first one the phase is "starting the editor".
+$script:PhaseRx = New-Object Text.RegularExpressions.Regex(('^(?:(?<engine>Initialize engine version)' +
+        '|(?<assemblies>Begin MonoManager ReloadAssembly)|(?<refresh>Application\.AssetDatabase Initial Refresh Start)' +
+        '|(?<packages>\[Package Manager\] (?:Resolving|Registered|Restoring))' +
+        '|(?<compile>Starting: .*bee_backend|\*\*\* Tundra requires additional run|\[\s*(?<done>\d+)/\s*(?<total>\d+)\s+\d+s\])' +
+        '|(?<reload>\*\*\* Tundra build success)|(?<import>Importing ''|Start importing )' +
+        '|(?<refreshed>Asset Pipeline Refresh \(id=[^)]*\): Total: .*InitialRefresh)' +
+        '|(?<scene>Application\.AssetDatabase Initial Refresh End)|(?<finishing>Loaded scene |\[Project\] Loading completed))'))
+$script:PhaseText = [ordered]@{
+    engine = 'starting the engine'; assemblies = 'loading script assemblies'; refresh = 'asset refresh'
+    packages = 'asset refresh: packages'; compile = 'asset refresh: compiling scripts'; reload = 'asset refresh: reloading scripts'
+    import = 'asset refresh: importing assets'; refreshed = 'asset refresh done'; scene = 'opening the scene'; finishing = 'finishing'
+}
+
+function New-StartupPhase { return @{ Key = $null; Done = $null; Total = $null } }
+
+# Only the last marker of a batch of new lines matters, so the batch is read from its end.
+function Update-StartupPhase($Phase, [object[]]$Lines) {
+    for ($i = $Lines.Count - 1; $i -ge 0; $i--) {
+        $m = $script:PhaseRx.Match([string]$Lines[$i])
+        if (-not $m.Success) { continue }
+        foreach ($k in $script:PhaseText.Keys) { if ($m.Groups[$k].Success) { $Phase.Key = $k; break } }
+        if ($m.Groups['done'].Success) { $Phase.Done = $m.Groups['done'].Value; $Phase.Total = $m.Groups['total'].Value }
+        return
+    }
+}
+
+# For example "asset refresh: compiling scripts (52%)": Bee's step count, capped at 99% because its
+# first number can pass its second.
+function Format-StartupPhase($Phase) {
+    if ($null -eq $Phase -or $null -eq $Phase.Key) { return 'starting the editor' }
+    $text = $script:PhaseText[$Phase.Key]
+    if ($Phase.Key -eq 'compile' -and $Phase.Done -and [int]$Phase.Total -gt 0) {
+        $text += (' ({0}%)' -f [math]::Min(99, [int][math]::Floor(100.0 * [int]$Phase.Done / [int]$Phase.Total)))
+    }
+    return $text
+}
+
+# Live import workers of an editor (Unity.exe -parentPid <editor>).
+function Get-ImportWorkerCount([int]$EditorPid) {
+    return @((Get-Snapshot).Unity | Where-Object { $_.Kind -eq 'worker' -and $_.Owner -eq $EditorPid }).Count
+}
+
 # ------------------------------------------------------------------ dialogs (look only)
 
 $script:WindowListerSource = @'
@@ -680,8 +776,10 @@ function Find-EditorExe([string]$Version) {
 
 function Invoke-Open([string]$ClonePath, [int]$Timeout = 0, [string]$BuildTargetName = '', [bool]$NoWaitMode = $false) {
     $clone = Resolve-Clone $ClonePath
-    $timeout = Get-TimeoutSetting 'open' 300
-    if ($Timeout -gt 0) { $timeout = $Timeout }
+    # $limit, not $timeout: PowerShell names are case-insensitive, so $timeout would overwrite the
+    # -Timeout parameter and every caller's -TimeoutSec would be ignored.
+    $limit = Get-TimeoutSetting 'open' 300
+    if ($Timeout -gt 0) { $limit = $Timeout }
     $version = Get-EditorVersion $clone
     $exe = Find-EditorExe $version
     Say "clone   $clone"
@@ -738,7 +836,9 @@ function Invoke-Open([string]$ClonePath, [int]$Timeout = 0, [string]$BuildTarget
 
     $git = Get-GitState $clone
     Say ('git     {0}; {1} changed entr(ies). Pull or switch branches while closed, not after opening.' -f $git.Branch, $git.Changes.Count)
-    Say ('commit  {0}' -f (Format-Commit (Get-CommitInfo)))
+    $commitNow = Get-CommitInfo
+    Say ('commit  {0}' -f (Format-Commit $commitNow))
+    Write-CapacityWarnings $snap $commitNow $true
 
     # Keep the previous log the way Unity does for its default log.
     $logDir = Join-Path $clone 'Logs'
@@ -774,13 +874,15 @@ function Invoke-Open([string]$ClonePath, [int]$Timeout = 0, [string]$BuildTarget
     Write-SlotEvent 'open' $clone $editorPid ([ordered]@{ standby = $standby; buildTarget = $(if ($targetArg) { $targetArg } else { $null }) })
 
     if ($NoWaitMode) {
-        Say ('STARTED pid {0}; not waiting here. Run "unity-slot wait {1}" until it says READY (12 s to a few minutes).' -f $editorPid, $clone)
+        if (Test-ViaMcp) { Say ('STARTED pid {0}; not waiting here. Meanwhile do the work that needs no editor; call {1} when you need it (READY in 12 s to a few minutes).' -f $editorPid, (Format-ToolCall 'wait_ready' @('slot', (Get-SlotLabel $clone)))) }
+        else { Say ('STARTED pid {0}; not waiting here. Run "unity-slot wait {1}" until it says READY (12 s to a few minutes).' -f $editorPid, $clone) }
         return
     }
-    $state = Wait-EditorReady $clone $editorPid $log $t0 $t0.AddSeconds($timeout)
+    $state = Wait-EditorReady $clone $editorPid $log $t0 $t0.AddSeconds($limit)
     if ($state -eq 'exited') { $script:ExitCode = 1; return }
     if ($state -eq 'pending') {
-        Say ('TIMEOUT: pid {0} not ready after {1}s. The editor is left running (not killed).' -f $editorPid, $timeout)
+        Say ('TIMEOUT: pid {0} not ready after {1}s; last phase {2}, {3} import worker(s). The editor is left running (not killed).' -f `
+                $editorPid, $limit, (Format-StartupPhase $script:LastStartupPhase), (Get-ImportWorkerCount $editorPid))
         Show-StartupStall $clone $editorPid $log
         $script:ExitCode = 2
     }
@@ -802,9 +904,13 @@ function Wait-EditorReady([string]$Clone, [int]$EditorPid, [string]$Log, [dateti
     $loadedAt = $null
     $licenseLine = $null
     $standbyNote = $null
+    $phase = New-StartupPhase
+    $script:LastStartupPhase = $phase
     $nextNote = [int]((Get-Date) - $Started).TotalSeconds + 30
     while ($true) {
-        foreach ($line in @(Read-NewLogLines $reader)) {
+        $batch = @(Read-NewLogLines $reader)
+        if ($batch.Count -gt 0) { Update-StartupPhase $phase $batch }
+        foreach ($line in $batch) {
             if ($null -eq $licenseLine -and $line -match '^\[Licensing::') {
                 if ($line -match '(?i)success|error|fail|not ') { $licenseLine = $line; Say ('license ' + (Protect-Text $line)) }
             }
@@ -827,7 +933,7 @@ function Wait-EditorReady([string]$Clone, [int]$EditorPid, [string]$Log, [dateti
             return 'exited'
         }
         if ((Get-Date) -ge $Deadline) { return 'pending' }
-        if ($elapsed -ge $nextNote) { Say ('waiting {0}s ...' -f [int]$elapsed); $nextNote += 30 }
+        if ($elapsed -ge $nextNote) { Say ('waiting {0}s ... ({1})' -f [int]$elapsed, (Format-StartupPhase $phase)); $nextNote += 30 }
         Start-Sleep -Milliseconds 1000
     }
 
@@ -850,12 +956,16 @@ function Wait-EditorReady([string]$Clone, [int]$EditorPid, [string]$Log, [dateti
     if (Add-OpenSnapshotReady $Clone $EditorPid $readyAt $wall) {
         Write-SlotEvent 'ready' $Clone $EditorPid ([ordered]@{ readySeconds = [math]::Round($wall, 1) })
     }
-    $tree = Get-EditorTree (Get-Snapshot) $EditorPid
+    $snapNow = Get-Snapshot
+    $tree = Get-EditorTree $snapNow $EditorPid
     Say ('now     {0} import worker(s), {1} other child process(es); editor tree private {2} GB / ws {3} GB' -f `
         $tree.WorkerCount, $tree.OtherCount, (Format-GB $tree.TotalPriv), (Format-GB $tree.TotalWs))
-    Say ('commit  {0}' -f (Format-Commit (Get-CommitInfo)))
+    $commitNow = Get-CommitInfo
+    Say ('commit  {0}' -f (Format-Commit $commitNow))
+    Write-CapacityWarnings $snapNow $commitNow $false
     Invoke-PendingHooks $Clone $EditorPid $Log
-    Say 'next    check through MCP that Application.dataPath is this clone before writing anything'
+    if (Test-ViaMcp) { Say ('next    check with your Unity MCP that Application.dataPath is "{0}/Assets" before writing anything' -f $Clone.Replace('\', '/')) }
+    else { Say 'next    check through MCP that Application.dataPath is this clone before writing anything' }
     return 'ready'
 }
 
@@ -868,7 +978,8 @@ function Invoke-Wait([string]$ClonePath, [int]$Timeout = 0) {
     $editors = @(Get-OpenFor (Get-Snapshot) $clone | Where-Object { $_.Kind -eq 'editor' })
     $log = Join-Path $clone 'Logs\Editor.log'
     if ($editors.Count -eq 0) {
-        Say 'NOT RUNNING: no editor has this clone open. Start it with open or acquire.'
+        if (Test-ViaMcp) { Say ('NOT RUNNING: no editor has this clone open. Start it with {0} or acquire.' -f (Format-ToolCall 'open' @('slot', (Get-SlotLabel $clone)))) }
+        else { Say 'NOT RUNNING: no editor has this clone open. Start it with open or acquire.' }
         if ((Test-Path -LiteralPath $log) -and ((Get-Date) - (Get-Item -LiteralPath $log).LastWriteTime).TotalMinutes -lt 10) {
             Say 'last log lines:'
             foreach ($l in @(Get-LogTail $log 15)) { Say ('  ' + $l) }
@@ -881,20 +992,23 @@ function Invoke-Wait([string]$ClonePath, [int]$Timeout = 0) {
     $logArg = Get-CmdArg $e.CommandLine 'logFile'
     if ($logArg) { $log = Get-NormPath $logArg }
     if (-not $logArg -and (-not (Test-Path -LiteralPath $log) -or (Get-Item -LiteralPath $log).LastWriteTime -lt $started)) {
-        Say ('READY? pid {0} was not started by unity-slot and has no log to check; running since {1}.' -f $e.Pid, (Format-Time $started))
+        if (Test-ViaMcp) { Say ('READY? pid {0} was started outside open/acquire (for example by the Unity Hub) and has no log to check; running since {1}.' -f $e.Pid, (Format-Time $started)) }
+        else { Say ('READY? pid {0} was not started by unity-slot and has no log to check; running since {1}.' -f $e.Pid, (Format-Time $started)) }
         return
     }
     $state = Wait-EditorReady $clone $e.Pid $log $started (Get-Date).AddSeconds($limit)
     if ($state -eq 'ready') { return }
     if ($state -eq 'exited') { $script:ExitCode = 1; return }
     $elapsed = ((Get-Date) - $started).TotalSeconds
+    $now = 'phase {0}, {1} import worker(s)' -f (Format-StartupPhase $script:LastStartupPhase), (Get-ImportWorkerCount $e.Pid)
     if ($elapsed -ge (Get-TimeoutSetting 'stalled' 300)) {
-        Say ('STALLED?: pid {0} is not ready {1}s after start (a warm open takes seconds, a cold import much longer). Left running.' -f $e.Pid, [int]$elapsed)
+        Say ('STALLED?: pid {0} is not ready {1}s after start (a warm open takes seconds, a cold import much longer); last {2}. Left running.' -f $e.Pid, [int]$elapsed, $now)
         Show-StartupStall $clone $e.Pid $log
         $script:ExitCode = 2
         return
     }
-    Say ('STARTING: pid {0} not ready yet, {1}s after start. Call wait again.' -f $e.Pid, [int]$elapsed)
+    if (Test-ViaMcp) { Say ('STARTING: pid {0} not ready yet, {1}s after start; {2}. Call {3} again.' -f $e.Pid, [int]$elapsed, $now, (Format-ToolCall 'wait_ready' @('slot', (Get-SlotLabel $clone)))) }
+    else { Say ('STARTING: pid {0} not ready yet, {1}s after start; {2}. Call wait again.' -f $e.Pid, [int]$elapsed, $now) }
     $script:ExitCode = 6
 }
 
@@ -938,7 +1052,7 @@ function Invoke-Close([string]$ClonePath) {
                 continue
             }
             Say ('REFUSED: beforeClose hook {0} says not to close now (see above). Save or discard first, or ask the user.' -f ($check.Refused -join ', '))
-            Say '         -AllowDirty sends the close anyway; Unity then shows its save dialog and stays open.'
+            if (-not (Test-ViaMcp)) { Say '         -AllowDirty sends the close anyway; Unity then shows its save dialog and stays open.' }
             Write-SlotEvent 'refused' $clone $e.Pid ([ordered]@{ command = 'close'; reason = 'beforeClose'; hooks = [string[]]@($check.Refused) })
             $script:ExitCode = 4
             return
@@ -1121,6 +1235,7 @@ try {
     Update-InstallPointer
     switch ($Command) {
         'dashboard' { Invoke-Dashboard }
+        'summary' { Invoke-Summary }
         'open' { Invoke-Open (Resolve-TargetPath $Target) $TimeoutSec $BuildTarget $NoWait.IsPresent }
         'wait' { Invoke-Wait (Resolve-TargetPath $Target) $TimeoutSec }
         'close' { Invoke-Close (Resolve-TargetPath $Target) }

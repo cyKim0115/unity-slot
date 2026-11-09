@@ -8,6 +8,7 @@ unity-slot registers Unity project clones as slots and opens and closes their ed
 - `lib\lease.ps1`: leases (`leases\<slot>.json`), acquire, release, renew
 - `lib\newclone.ps1`: the new-clone plan (dry run) and `-Apply`
 - `lib\dashboard.ps1`: the dashboard document (schema `unity-slot.dashboard/1`), `events.jsonl`, `install.json`, the one-look readiness check
+- `lib\summary.ps1`: the short status (`summary`, the MCP `status` default), drawn from the dashboard document
 - `mcp\unity-slot-mcp.ps1`: stdio MCP server. A thin shell that runs `unity-slot.ps1` per tool call; no logic of its own.
 - `examples\hooks\`: example hooks. `config.example.json`: every setting with its default.
 
@@ -29,6 +30,7 @@ If `private/AGENTS.md` exists (a personal overlay, git-ignored in the public rep
 - **PowerShell 5.1: do not pass `@($list)` for a `List[object]` parameter.** It fails with "Argument types do not match". Pass `.ToArray()` or loop with `foreach`.
 - **`dashboard` stays read-only and prints only its JSON on stdout** (errors on stderr). No hooks, no command lines, git only with `--no-optional-locks`, one process snapshot. Fields are a contract for other tools: add fields freely, but renaming or removing one needs a new `schema` major number.
 - **Event logging and the install pointer never fail a command.** `Write-SlotEvent` and `Update-InstallPointer` swallow their errors.
+- **Next steps under MCP name the tools; the CLI wording does not change.** When `Test-ViaMcp` is true (`UNITY_SLOT_VIA=mcp`), write `Format-ToolCall 'wait_ready' @('slot', $name)` and so on instead of a `unity-slot <command>` line, and leave the owner out when it is the session's own (`Get-OwnerArg`). Compare the CLI output before and after a change.
 - **The MCP server writes only JSON-RPC messages to stdout.** Logs go to stderr. Tools return quickly (open and acquire with `-NoWait`, wait_ready at most 55 s). There is no kill tool; closing without saving and creating clones need explicit arguments.
 - **Do not touch audio settings** (volume, mute, Unity audio settings).
 
@@ -49,6 +51,8 @@ Protect-Text '-accessToken abc'
 # Tests that leave the real registry and config alone
 $env:UNITY_SLOT_HOME = "$env:TEMP\unity-slot-test"
 $env:UNITY_SLOT_CONFIG = "$env:TEMP\unity-slot-test\config.json"
+# capacity warnings with a made-up commit charge (percent, 0 to 100)
+$env:UNITY_SLOT_COMMIT_OVERRIDE = '91'
 ```
 
 Run real `open`, `close` and `acquire` only on clones that are closed and that nobody is looking at. Test `new-clone -Apply` with a fake project (a local bare origin, `-CloneRoot`, `-NoOpen`).

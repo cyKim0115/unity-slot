@@ -18,6 +18,65 @@ function Resolve-Owner {
     return ('{0}@{1}' -f $env:USERNAME, $env:COMPUTERNAME)
 }
 
+# The MCP client process behind a call (Claude Code, Codex, Cursor): the first process above this one
+# that is not a shell, so the MCP server (powershell) and a cmd wrapper are skipped. Only for MCP calls.
+# Codex and Cursor give the MCP server no session id, so their owner id changes when the server
+# restarts; the client process recorded in the lease tells whether the lease is orphaned.
+$script:ClientWrapperNames = @('powershell.exe', 'pwsh.exe', 'cmd.exe', 'conhost.exe')
+function Get-McpClientProcess($Snap) {
+    if (-not (Test-ViaMcp) -or -not $Snap.ByPid.ContainsKey([int]$PID)) { return $null }
+    $cur = $Snap.ByPid[[int]$PID]
+    for ($i = 0; $i -lt 6; $i++) {
+        $parentId = [int]$cur.ParentProcessId
+        if ($parentId -eq [int]$cur.ProcessId -or -not $Snap.ByPid.ContainsKey($parentId)) { return $null }
+        $parent = $Snap.ByPid[$parentId]
+        # a parent is never younger than its child; a younger one only reuses the id
+        if ($null -ne $parent.CreationDate -and $null -ne $cur.CreationDate -and $parent.CreationDate -gt $cur.CreationDate) { return $null }
+        if ($script:ClientWrapperNames -notcontains ([string]$parent.Name).ToLowerInvariant()) {
+            return [pscustomobject]@{ Name = [string]$parent.Name; Pid = $parentId; StartedAt = $parent.CreationDate }
+        }
+        $cur = $parent
+    }
+    return $null
+}
+
+# $null = the lease has no client process recorded (CLI, or older leases); else whether it still runs.
+function Test-LeaseClientAlive($Lease, $Snap) {
+    if ($null -eq $Lease -or [int]$Lease.clientPid -le 0) { return $null }
+    if (-not $Snap.ByPid.ContainsKey([int]$Lease.clientPid)) { return $false }
+    $p = $Snap.ByPid[[int]$Lease.clientPid]
+    if ($null -ne $Lease.clientStartedAt -and $null -ne $p.CreationDate -and
+        [math]::Abs(([datetime]$p.CreationDate - [datetime]$Lease.clientStartedAt).TotalSeconds) -gt 2) { return $false }
+    return $true
+}
+
+# Notes on a lease that is not this session's: orphaned (its client process has exited), or, over MCP,
+# another id of this session's own client (Codex and Cursor get a new id when the MCP server restarts).
+function Get-LeaseNotes([string]$SlotName, $Lease, $Alive) {
+    if ($null -eq $Lease) { return }
+    # this session's own lease (a resumed Claude Code session keeps its id but has a new process)
+    if ((Test-ViaMcp) -and [string]$Lease.owner -eq [string]$env:UNITY_SLOT_MCP_OWNER) { return }
+    if ($Alive -eq $false) {
+        if (Test-ViaMcp) { 'note    {0}: the lease of {1} is orphaned: the {2} process that took it has exited. Tell the user; only they can release another session''s lease.' -f $SlotName, $Lease.owner, $Lease.clientName }
+        else { 'note    {0}: the lease of {1} is orphaned: its client process ({2} pid {3}) has exited. -AnyOwner releases it (only when the user says so).' -f $SlotName, $Lease.owner, $Lease.clientName, $Lease.clientPid }
+        return
+    }
+    if (Test-SameClientOtherId ([string]$Lease.owner)) {
+        $prefix = ([string]$env:UNITY_SLOT_MCP_OWNER -split ':', 2)[0]
+        'note    {0}: leased by {1}, another {2} id. If this conversation acquired {0} before the MCP server restarted (that acquire result showed owner {1}), call {3}; otherwise it is another {2} session''s: leave it.' -f `
+            $SlotName, $Lease.owner, $prefix, (Format-ToolCall 'release' @('slot', $SlotName, 'owner', [string]$Lease.owner))
+    }
+}
+
+# MCP only: an owner id from the same client name as this session's (for example codex-mcp-client:...)
+# when this session's id is not stable (no session id from the client), so a server restart made it.
+function Test-SameClientOtherId([string]$LeaseOwner) {
+    $me = [string]$env:UNITY_SLOT_MCP_OWNER
+    if (-not (Test-ViaMcp) -or -not $me -or $env:UNITY_SLOT_MCP_OWNER_STABLE -eq '1' -or $LeaseOwner -eq $me) { return $false }
+    $prefix = ($me -split ':', 2)[0]
+    return ($prefix -and $LeaseOwner.StartsWith($prefix + ':', [StringComparison]::OrdinalIgnoreCase))
+}
+
 # Lease length: -Hours when given, else the config's "leaseHours" (8).
 function Get-LeaseHours {
     if ($script:Bound.ContainsKey('Hours')) { return [double]$Hours }
@@ -34,7 +93,8 @@ function Get-SlotLease([string]$SlotName) {
         try { $d = [IO.File]::ReadAllText($file, [Text.Encoding]::UTF8) | ConvertFrom-Json } catch { Start-Sleep -Milliseconds 200 }
     }
     if ($null -eq $d) {
-        return [pscustomobject]@{ owner = '(unreadable lease file)'; acquiredAt = $null; expiresAt = $null; need = ''; nonce = ''; editorPid = 0; openedByAcquire = $false; host = ''; Expired = $true }
+        return [pscustomobject]@{ owner = '(unreadable lease file)'; acquiredAt = $null; expiresAt = $null; need = ''; nonce = ''; editorPid = 0; openedByAcquire = $false; host = ''
+            clientName = ''; clientPid = 0; clientStartedAt = $null; Expired = $true }
     }
     $exp = $null
     $e = [string](Get-Prop $d 'expiresAt')
@@ -42,6 +102,10 @@ function Get-SlotLease([string]$SlotName) {
     $acq = $null
     $a = [string](Get-Prop $d 'acquiredAt')
     if ($a) { $acq = [datetime]::Parse($a, $script:Inv, [Globalization.DateTimeStyles]::RoundtripKind) }
+    $c = Get-Prop $d 'client'
+    $cStarted = $null
+    $cs = [string](Get-Prop $c 'startedAt')
+    if ($cs) { $cStarted = [datetime]::Parse($cs, $script:Inv, [Globalization.DateTimeStyles]::RoundtripKind) }
     return [pscustomobject]@{
         owner           = [string](Get-Prop $d 'owner')
         acquiredAt      = $acq
@@ -51,6 +115,9 @@ function Get-SlotLease([string]$SlotName) {
         editorPid       = [int](Get-Prop $d 'editorPid')
         openedByAcquire = [bool](Get-Prop $d 'openedByAcquire')
         host            = [string](Get-Prop $d 'host')
+        clientName      = [string](Get-Prop $c 'name')
+        clientPid       = [int](Get-Prop $c 'pid')
+        clientStartedAt = $cStarted
         Expired         = ($null -eq $exp -or (Get-Date) -gt $exp)
     }
 }
@@ -66,19 +133,27 @@ function ConvertTo-LeaseJson($SlotName, $Lease) {
         editorPid       = [int]$Lease.editorPid
         openedByAcquire = [bool]$Lease.openedByAcquire
         host            = $env:COMPUTERNAME
+        client          = $null
+    }
+    if ([int]$Lease.clientPid -gt 0) {
+        $started = $null
+        if ($null -ne $Lease.clientStartedAt) { $started = ([datetime]$Lease.clientStartedAt).ToString('o', $script:Inv) }
+        $out.client = [pscustomobject][ordered]@{ name = $Lease.clientName; pid = [int]$Lease.clientPid; startedAt = $started }
     }
     return ($out | ConvertTo-Json)
 }
 
 # Returns the new lease, or $null when someone else got there first.
-function New-SlotLease($Slot, [string]$OwnerId, [string]$Need, [double]$HoursValue, [bool]$ReplaceExpired) {
+function New-SlotLease($Slot, [string]$OwnerId, [string]$Need, [double]$HoursValue, [bool]$ReplaceExpired, $Client = $null) {
     $dir = Get-LeaseDir
     if (-not (Test-Path -LiteralPath $dir)) { [void](New-Item -ItemType Directory -Path $dir -Force) }
     $now = Get-Date
     $lease = [pscustomobject]@{
         owner = $OwnerId; acquiredAt = $now; expiresAt = $now.AddHours($HoursValue); need = $Need
-        nonce = [guid]::NewGuid().ToString('N'); editorPid = 0; openedByAcquire = $false; host = $env:COMPUTERNAME; Expired = $false
+        nonce = [guid]::NewGuid().ToString('N'); editorPid = 0; openedByAcquire = $false; host = $env:COMPUTERNAME
+        clientName = ''; clientPid = 0; clientStartedAt = $null; Expired = $false
     }
+    if ($null -ne $Client) { $lease.clientName = $Client.Name; $lease.clientPid = $Client.Pid; $lease.clientStartedAt = $Client.StartedAt }
     $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes((ConvertTo-LeaseJson $Slot.name $lease))
     $file = Get-LeaseFile $Slot.name
     if (-not $ReplaceExpired) {
@@ -128,18 +203,23 @@ function Invoke-Acquire {
     $ownerId = Resolve-Owner
     $projectFilter = Get-ProjectFilter
     $reg = Read-Registry
-    if ($reg.slots.Count -eq 0) { throw ('no slots registered ({0}). Run: unity-slot scan -Project <owner/repo> -Apply' -f (Get-RegistryPath)) }
+    if ($reg.slots.Count -eq 0) {
+        if (Test-ViaMcp) { throw ('no slots registered ({0}). Ask the user to register the clones (scan).' -f (Get-RegistryPath)) }
+        throw ('no slots registered ({0}). Run: unity-slot scan -Project <owner/repo> -Apply' -f (Get-RegistryPath))
+    }
     $snap = Get-Snapshot
 
     $matched = @($reg.slots | Where-Object { $_.agentUse -and (Test-SlotNeed $_ $need) -and (Test-SlotProject $_ $projectFilter) })
     if ($matched.Count -eq 0) {
         Say ('NO SLOT: no agent slot has purpose or platform "{0}"{1}.' -f $need, $(if ($projectFilter) { ' in ' + $projectFilter } else { '' }))
-        Say ('see: unity-slot slots   new clone plan: unity-slot new-clone {0}{1}' -f $need, $(if ($projectFilter) { ' -Project ' + $projectFilter } else { '' }))
+        if (Test-ViaMcp) { Say ('see: status()   new clone plan: {0}' -f (Format-ToolCall 'create' @('purpose', $need, 'project', $projectFilter))) }
+        else { Say ('see: unity-slot slots   new clone plan: unity-slot new-clone {0}{1}' -f $need, $(if ($projectFilter) { ' -Project ' + $projectFilter } else { '' })) }
         $script:ExitCode = 5
         return
     }
     $projects = @($matched | ForEach-Object { $_.project } | Select-Object -Unique)
     if ($projects.Count -gt 1) {
+        if (Test-ViaMcp) { throw ('"{0}" matches slots of {1} projects ({2}). Add project="<repo>".' -f $need, $projects.Count, ($projects -join ', ')) }
         throw ('"{0}" matches slots of {1} projects ({2}). Add -Project <repo>.' -f $need, $projects.Count, ($projects -join ', '))
     }
 
@@ -160,24 +240,27 @@ function Invoke-Acquire {
     Write-TextTable @('Slot', 'Platform', 'Mode', 'State', 'Lease', 'For you') $rows
     if ($free.Count -eq 0) {
         Say ('NO FREE SLOT for "{0}". Nothing was opened.' -f $need)
-        Say ('next    show the user a new clone plan: unity-slot new-clone {0} -Project {1}' -f $need, $projects[0])
+        if (Test-ViaMcp) { Say ('next    show the user a new clone plan: {0}' -f (Format-ToolCall 'create' @('purpose', $need, 'project', $projects[0]))) }
+        else { Say ('next    show the user a new clone plan: unity-slot new-clone {0} -Project {1}' -f $need, $projects[0]) }
         $script:ExitCode = 5
         return
     }
 
     $chosen = $null
     $lease = $null
+    $client = Get-McpClientProcess $snap
     foreach ($c in @($free | Sort-Object Rank, @{ Expression = { $_.LastUsed }; Descending = $true })) {
         $existing = $c.State.Lease
         if ($null -ne $existing -and $existing.owner -eq $ownerId) {
             $existing.expiresAt = (Get-Date).AddHours((Get-LeaseHours))
+            if ($null -ne $client) { $existing.clientName = $client.Name; $existing.clientPid = $client.Pid; $existing.clientStartedAt = $client.StartedAt }
             Update-SlotLease $c.Slot.name $existing
             $chosen = $c; $lease = $existing
             Say ('lease   already yours; extended to {0}' -f (Format-Time $existing.expiresAt))
             break
         }
         $replace = ($null -ne $existing -and $existing.Expired)
-        $lease = New-SlotLease $c.Slot $ownerId $need (Get-LeaseHours) $replace
+        $lease = New-SlotLease $c.Slot $ownerId $need (Get-LeaseHours) $replace $client
         if ($null -ne $lease) {
             $chosen = $c
             if ($replace) {
@@ -217,17 +300,33 @@ function Invoke-Acquire {
         $lease.openedByAcquire = $true
         Update-SlotLease $slot.name $lease
     }
+    $mcp = Test-ViaMcp
     $state = 'closed (-NoOpen)'
+    if ($mcp) { $state = 'closed (open=false)' }
     if ($editorPid -gt 0) { $state = 'editor pid ' + $editorPid }
-    if ($NoWait -and $lease.openedByAcquire) { $state += ' starting (run: unity-slot wait ' + $slot.name + ')' }
+    $starting = ($NoWait -and $lease.openedByAcquire)
+    if ($starting) {
+        if ($mcp) { $state += ' starting (call ' + (Format-ToolCall 'wait_ready' @('slot', $slot.name)) + ' when you need it)' }
+        else { $state += ' starting (run: unity-slot wait ' + $slot.name + ')' }
+    }
     Say ('ACQUIRED {0}: {1}; work in {2}' -f $slot.name, $state, $slot.path)
-    Say ('next    check Application.dataPath through MCP; when done: unity-slot release {0} -Owner {1}' -f $slot.name, $lease.owner)
+    $releaseCall = Format-ToolCall 'release' @('slot', $slot.name, 'owner', (Get-OwnerArg $lease.owner))
+    if ($mcp -and $starting) {
+        Say ('next    while it starts, do the work that needs no editor (read code, research, plan; no Unity asset or script edits yet); when you need the editor: {0}, then check with your Unity MCP that Application.dataPath is "{1}/Assets"; when done: {2}' -f (Format-ToolCall 'wait_ready' @('slot', $slot.name)), $slot.path.Replace('\', '/'), $releaseCall)
+    } elseif ($mcp) {
+        Say ('next    check with your Unity MCP that Application.dataPath is "{0}/Assets"; when done: {1}' -f $slot.path.Replace('\', '/'), $releaseCall)
+    } else {
+        Say ('next    check Application.dataPath through MCP; when done: unity-slot release {0} -Owner {1}' -f $slot.name, $lease.owner)
+    }
 }
 
 function Invoke-Release {
     $reg = Read-Registry
     $slot = Find-Slot $reg $Target
-    if ($null -eq $slot) { throw ('no registered slot named or located at "{0}". See: unity-slot slots' -f $Target) }
+    if ($null -eq $slot) {
+        if (Test-ViaMcp) { throw ('no registered slot named or located at "{0}". See status().' -f $Target) }
+        throw ('no registered slot named or located at "{0}". See: unity-slot slots' -f $Target)
+    }
     $ownerId = Resolve-Owner
     $snap = Get-Snapshot
     $st = Get-SlotState $slot $snap
@@ -237,7 +336,9 @@ function Invoke-Release {
         return
     }
     if ($st.Lease.owner -ne $ownerId -and -not $AnyOwner) {
-        Say ('REFUSED: the lease belongs to {0}, not {1}. -AnyOwner releases it anyway (only when the user says so).' -f $st.Lease.owner, $ownerId)
+        if (Test-ViaMcp) { Say ('REFUSED: the lease belongs to {0}, not {1}. Only the user can release someone else''s lease.' -f $st.Lease.owner, $ownerId) }
+        else { Say ('REFUSED: the lease belongs to {0}, not {1}. -AnyOwner releases it anyway (only when the user says so).' -f $st.Lease.owner, $ownerId) }
+        foreach ($n in @(Get-LeaseNotes $slot.name $st.Lease (Test-LeaseClientAlive $st.Lease $snap))) { Say $n }
         Write-SlotEvent 'refused' $slot.path $st.EditorPid ([ordered]@{ command = 'release'; reason = 'lease of someone else'; leaseOwner = $st.Lease.owner }) $ownerId
         $script:ExitCode = 4
         return

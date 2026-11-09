@@ -26,6 +26,8 @@ try {
 $script:PowerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 $script:Owner = ''
+$script:OwnerStable = $false
+$script:Protocol = ''
 $script:Versions = @('2025-06-18', '2025-03-26', '2024-11-05')
 
 [Console]::InputEncoding = $script:Utf8
@@ -53,44 +55,67 @@ function Send-Error($Id, [int]$Code, [string]$Message) {
 
 # ------------------------------------------------------------------ tools
 
-function New-Tool([string]$Name, [string]$Description, $Properties, [string[]]$Required) {
+function New-Tool([string]$Name, [string]$Description, $Properties, [string[]]$Required, $Annotations = $null) {
     $schema = [ordered]@{ type = 'object'; properties = $Properties }
     if ($Required -and $Required.Count -gt 0) { $schema.required = $Required }
-    return [ordered]@{ name = $Name; description = $Description; inputSchema = $schema }
+    $tool = [ordered]@{ name = $Name; description = $Description; inputSchema = $schema }
+    if ($null -ne $Annotations) { $tool.annotations = $Annotations }
+    return $tool
 }
 
 function New-Prop([string]$Type, [string]$Description) { return [ordered]@{ type = $Type; description = $Description } }
 
+# MCP tool annotations (protocol 2025-03-26 and later; left out for 2024-11-05 clients). Hints only:
+# destructiveHint and idempotentHint mean something only when readOnlyHint is false.
+function New-Hints([string]$Title, [bool]$ReadOnly, [bool]$Destructive, [bool]$Idempotent, [bool]$OpenWorld) {
+    $h = [ordered]@{ title = $Title; readOnlyHint = $ReadOnly }
+    if (-not $ReadOnly) { $h.destructiveHint = $Destructive; $h.idempotentHint = $Idempotent }
+    $h.openWorldHint = $OpenWorld
+    return $h
+}
+
 $script:Tools = @(
-    (New-Tool 'status' ('Unity slots on this PC: project, platform, branch, purposes, hot/ondemand, whether agents may use it, ' +
-            'editor state (open pid or closed) and leases. processes=true shows the editor process view instead ' +
-            '(import workers, other child processes, memory). dashboard=true returns the full read-only dashboard ' +
-            'document (editor state starting/ready/stalled, memory, lease, git, recent events, warning flags).') ([ordered]@{
+    (New-Tool 'status' ('Short status of the Unity slots on this PC: a line with open editors of the maximum and the commit, ' +
+            'one table (slot, platform, mode, state, lease, agent use) and warnings (commit, editors at the maximum, slot flags). ' +
+            'slot or project narrow it. format=json gives the slot registry as JSON instead; processes=true the editor ' +
+            'processes and memory; dashboard=true the full read-only dashboard document (editor state, memory, lease, git, ' +
+            'recent events, flags).') ([ordered]@{
+            slot      = (New-Prop 'string' 'Only this slot (name or clone path).')
+            project   = (New-Prop 'string' 'Only slots of this repository (owner/repo, repo, or its end).')
+            format    = (New-Prop 'string' 'summary (default, a short table) or json (the slot registry as JSON).')
             processes = (New-Prop 'boolean' 'Show editor processes and memory instead of the slot registry.')
             dashboard = (New-Prop 'boolean' 'Return the dashboard document (schema unity-slot.dashboard/1).')
             git       = (New-Prop 'string' 'With dashboard: basic (default, each slot''s git status) or full (also local-only commits, branches, stash, worktrees).')
-        }) @()),
+        }) @() (New-Hints 'Unity slot status' $true $false $true $false)),
     (New-Tool 'acquire' ('Lease a free slot that fits a purpose or platform (for example agent, webgl, windows, android) ' +
-            'and start its editor without waiting. Then call wait_ready until READY, check through the Unity MCP that ' +
-            'Application.dataPath is that slot, work there, and call release when done. "NO FREE SLOT" means none fits: ' +
-            'show the plan from create to the user. Never switch a slot to another platform.') ([ordered]@{
+            'and start its editor without waiting. Call it as soon as you know the task needs the Unity editor, before ' +
+            'planning or research (pull or switch branches first, while it is closed): the editor starts (12 s to minutes) ' +
+            'while you read code, research and plan; edit Unity assets or scripts only after READY. Call wait_ready when ' +
+            'you actually need the editor, check through the Unity MCP that Application.dataPath is that slot, work there, ' +
+            'and call release when done. Several slots: take them together only while the commit is below the high mark ' +
+            '(no "warn capacity" line), else one after another. "NO FREE SLOT" means none fits: show the plan from create ' +
+            'to the user. Never switch a slot to another platform. If the result has a "warn capacity" line (editors at the ' +
+            'maximum, commit high), tell the user.') ([ordered]@{
             purpose = (New-Prop 'string' 'Purpose tag or platform, for example agent, webgl, windows, android.')
             project = (New-Prop 'string' 'Repository (owner/repo, repo, or its end), for example my-game. Needed when several projects fit.')
             owner   = (New-Prop 'string' 'Lease owner. Default: this MCP session.')
             hours   = (New-Prop 'number' 'Lease length in hours (default: leaseHours in the config, 8). Acquiring again extends your own lease.')
             open    = (New-Prop 'boolean' 'Start the editor (default true). false only leases the slot.')
-        }) @('purpose')),
-    (New-Tool 'open' ('Start the editor of a slot (name) or clone path and return at once; then call wait_ready. ' +
-            'Does nothing if it is already open. Prefer acquire, which also leases the slot.') ([ordered]@{
+        }) @('purpose') (New-Hints 'Lease a Unity slot' $false $false $false $false)),
+    (New-Tool 'open' ('Start the editor of a slot (name) or clone path and return at once. Like acquire, call it as soon as ' +
+            'the task needs the editor and do the work that needs no editor while it starts; call wait_ready when you ' +
+            'need it. Does nothing if it is already open. Prefer acquire, which also leases the slot. If the result has a ' +
+            '"warn capacity" line, tell the user.') ([ordered]@{
             slot         = (New-Prop 'string' 'Slot name from status, or a clone path.')
             build_target = (New-Prop 'string' 'Platform for a first open (Android, WebGL, Windows). Refused if it would switch the platform.')
-        }) @('slot')),
-    (New-Tool 'wait_ready' ('Wait up to timeout_sec (default 45, at most 55) for a starting editor. READY: go on. ' +
+        }) @('slot') (New-Hints 'Open a slot editor' $false $false $true $false)),
+    (New-Tool 'wait_ready' ('Call it when you actually need the editor, not right after acquire or open: until then do the ' +
+            'work that needs no editor. Waits up to timeout_sec (default 45, at most 55) for a starting editor. READY: go on. ' +
             'STARTING: call again. STALLED (over 5 minutes): it lists the dialogs; hand it to the user, never click. ' +
-            'NOT RUNNING: it is not open.') ([ordered]@{
+            'NOT RUNNING: it is not open. If the result has a "warn capacity" line, tell the user.') ([ordered]@{
             slot        = (New-Prop 'string' 'Slot name or clone path.')
             timeout_sec = (New-Prop 'number' 'Seconds to wait in this call (1 to 55, default 45).')
-        }) @('slot')),
+        }) @('slot') (New-Hints 'Wait for a slot editor' $true $false $true $false)),
     (New-Tool 'close' ('Close a slot editor like clicking X: Unity saves, nothing is killed. Refuses when a beforeClose ' +
             'hook says not to close now (for example unsaved scenes: save or discard first, as its message says). ' +
             'Reports files written by the close and files changed while it was open; never reverts them. ' +
@@ -99,24 +124,26 @@ $script:Tools = @(
             slot            = (New-Prop 'string' 'Slot name or clone path.')
             timeout_sec     = (New-Prop 'number' 'Seconds to wait for the editor to exit (default 60, at most 240).')
             discard_unsaved = (New-Prop 'boolean' 'Close without saving through the official Unity CLI. Only on the user''s word.')
-        }) @('slot')),
+        }) @('slot') (New-Hints 'Close a slot editor' $false $true $true $false)),
     (New-Tool 'release' ('Release a slot you acquired: an on-demand slot is closed like close, a hot slot stays open, then ' +
-            'the lease is dropped. Only the lease owner can release.') ([ordered]@{
+            'the lease is dropped. Only the lease owner can release. If the MCP server restarted since your acquire, this ' +
+            'session has a new owner id: pass owner= the id your acquire result showed (status explains such leases).') ([ordered]@{
             slot        = (New-Prop 'string' 'Slot name.')
-            owner       = (New-Prop 'string' 'Lease owner. Default: this MCP session.')
+            owner       = (New-Prop 'string' 'Lease owner. Default: this MCP session. After a server restart: the owner your acquire showed.')
             keep_open   = (New-Prop 'boolean' 'Drop the lease but leave the editor open.')
             timeout_sec = (New-Prop 'number' 'Seconds to wait for the editor to exit (default 60, at most 240).')
-        }) @('slot')),
+        }) @('slot') (New-Hints 'Release a Unity slot' $false $true $true $false)),
     (New-Tool 'create' ('Plan a new clone slot for a purpose when no slot is free. Without confirm it is a dry run that ' +
             'creates nothing: show the plan to the user. confirm=true runs it (git clone, Library copy, register, ' +
             'afterClone hooks; can take minutes) and is only for after the user agreed to that plan. The first open is ' +
-            'left to open + wait_ready; the afterFirstOpen hooks run when that editor is first READY.') ([ordered]@{
+            'left to open + wait_ready; the afterFirstOpen hooks run when that editor is first READY. The clone gets a ' +
+            'generic name, <repo>-<smallest free number>: no branch, feature, platform, agent or date in names (the ' +
+            'registry keeps purposes, platform and branch).') ([ordered]@{
             purpose = (New-Prop 'string' 'Purpose tag or platform for the new slot.')
             project = (New-Prop 'string' 'Repository (owner/repo, repo, or its end), for example my-game.')
             from    = (New-Prop 'string' 'Slot to copy from (default: a closed slot of that purpose).')
-            name    = (New-Prop 'string' 'Folder name (default <repo>-<number> in the clone root: cloneRoot in the config, else next to the template).')
             confirm = (New-Prop 'boolean' 'true = really create it. Only after the user agreed to the dry-run plan.')
-        }) @('purpose'))
+        }) @('purpose') (New-Hints 'Plan or create a clone slot' $false $false $false $true))
 )
 
 function Get-Arg($Arguments, [string]$Name, $Default) {
@@ -147,8 +174,12 @@ function Invoke-UnitySlot([string[]]$CliArgs) {
     $psi.RedirectStandardError = $true
     $psi.StandardOutputEncoding = $script:Utf8
     $psi.StandardErrorEncoding = $script:Utf8
-    # events.jsonl records which way a command came ("via": "mcp")
+    # events.jsonl records which way a command came ("via": "mcp"), and next steps are worded as tool
+    # calls; the session's default owner lets them leave owner="..." out when it is the default.
     $psi.EnvironmentVariables['UNITY_SLOT_VIA'] = 'mcp'
+    if ($script:Owner) { $psi.EnvironmentVariables['UNITY_SLOT_MCP_OWNER'] = $script:Owner }
+    # stable = the id comes from the client's session id and survives a server restart (Claude Code)
+    $psi.EnvironmentVariables['UNITY_SLOT_MCP_OWNER_STABLE'] = $(if ($script:OwnerStable) { '1' } else { '0' })
     $p = [Diagnostics.Process]::Start($psi)
     $p.StandardInput.Close()
     $outTask = $p.StandardOutput.ReadToEndAsync()
@@ -204,7 +235,13 @@ function Invoke-Tool([string]$Name, $A) {
                 return Invoke-UnitySlot @('dashboard', '-Json', '-Git', $level)
             }
             if (Get-Arg $A 'processes' $false) { return Invoke-UnitySlot @('status', '-Json') }
-            return Invoke-UnitySlot @('slots', '-Json')
+            $cli = @('summary')
+            if ([string](Get-Arg $A 'format' 'summary') -eq 'json') { $cli = @('slots', '-Json') }
+            $slot = [string](Get-Arg $A 'slot' '')
+            if ($slot) { $cli += $slot }
+            $project = [string](Get-Arg $A 'project' '')
+            if ($project) { $cli += @('-Project', $project) }
+            return Invoke-UnitySlot $cli
         }
         'acquire' {
             $cli = @('acquire', [string](Get-Arg $A 'purpose' ''), '-Owner', [string](Get-Arg $A 'owner' $script:Owner))
@@ -238,11 +275,14 @@ function Invoke-Tool([string]$Name, $A) {
         }
         'create' {
             $cli = @('new-clone', [string](Get-Arg $A 'purpose' ''))
-            foreach ($pair in @(@('project', '-Project'), @('from', '-From'), @('name', '-Name'))) {
+            # no name argument: new clones get the generic <repo>-<n> name
+            foreach ($pair in @(@('project', '-Project'), @('from', '-From'))) {
                 $v = [string](Get-Arg $A $pair[0] '')
                 if ($v) { $cli += @($pair[1], $v) }
             }
-            if (Get-Arg $A 'confirm' $false) { $cli += @('-Apply', '-NoOpen') }
+            # The first open is always left to open + wait_ready, so the dry-run plan says what confirm does.
+            $cli += '-NoOpen'
+            if (Get-Arg $A 'confirm' $false) { $cli += '-Apply' }
             return Invoke-UnitySlot $cli
         }
         default { throw "unknown tool: $Name" }
@@ -254,9 +294,17 @@ $script:ErrorCodes = @(1, 3, 4)
 $script:CodeNames = @{ 0 = 'ok'; 1 = 'error'; 2 = 'timed out, editor left running'; 3 = 'editor version not installed'
     4 = 'refused'; 5 = 'no free slot'; 6 = 'still starting' }
 
+# Claude Code passes its session id (CLAUDE_CODE_SESSION_ID), so its owner id survives a server restart.
+# Codex passes MCP servers only a fixed list of environment variables and Cursor documents no session or
+# chat id (checked 2026-11-06), so other clients get a random id per server process; the lease records
+# the client process and status explains leases of the same client name (lib\lease.ps1 Get-LeaseNotes).
 function Get-OwnerId($ClientInfo) {
     $id = $env:CLAUDE_CODE_SESSION_ID
-    if (-not [string]::IsNullOrWhiteSpace($id)) { return ('claude:' + $id.Substring(0, [Math]::Min(8, $id.Length))) }
+    if (-not [string]::IsNullOrWhiteSpace($id)) {
+        $script:OwnerStable = $true
+        return ('claude:' + $id.Substring(0, [Math]::Min(8, $id.Length)))
+    }
+    $script:OwnerStable = $false
     $client = [string](Get-Prop $ClientInfo 'name')
     $client = ($client -replace '[^A-Za-z0-9_-]', '')
     if (-not $client) { $client = 'mcp' }
@@ -286,25 +334,40 @@ while ($true) {
                 $asked = [string](Get-Prop $params 'protocolVersion')
                 $version = $script:Versions[0]
                 if ($script:Versions -contains $asked) { $version = $asked }
+                $script:Protocol = $version
                 Write-Log ('initialize ' + $asked + ' -> ' + $version + ', owner ' + $script:Owner)
                 Send-Result $id ([ordered]@{
                         protocolVersion = $version
                         capabilities    = [ordered]@{ tools = [ordered]@{ listChanged = $false } }
                         serverInfo      = [ordered]@{ name = 'unity-slot'; version = $script:ServerVersion }
-                        instructions    = ('Unity editors on this PC are slots. To work in one: acquire(purpose, project) -> ' +
-                            'wait_ready until READY -> check Application.dataPath through the Unity MCP -> work -> release(slot). ' +
-                            'Do not switch platforms, do not take slots leased by others, never force anything; hand stalls to the user.')
+                        instructions    = ('Unity editors on this PC are slots. Decide first whether the task needs the Unity ' +
+                            'editor; if it does, pull or switch branches while it is closed, then call acquire(purpose, project) ' +
+                            'before planning or research. It returns at once; while the editor starts, read code, research and ' +
+                            'plan, but edit Unity assets or scripts only after READY. When you need the editor: wait_ready until ' +
+                            'READY -> check Application.dataPath through the Unity MCP -> work -> release(slot). Tell the user ' +
+                            'about "warn capacity" lines. Do not switch platforms, do not take slots leased by others, never ' +
+                            'force anything; hand stalls to the user.')
                     })
             }
             'ping' { if ($hasId) { Send-Result $id ([ordered]@{}) } }
-            'tools/list' { Send-Result $id ([ordered]@{ tools = $script:Tools }) }
+            'tools/list' {
+                $list = $script:Tools
+                # annotations came with protocol 2025-03-26; an older client gets the tools without them
+                if ($script:Protocol -eq '2024-11-05') {
+                    $list = @($script:Tools | ForEach-Object { [ordered]@{ name = $_.name; description = $_.description; inputSchema = $_.inputSchema } })
+                }
+                Send-Result $id ([ordered]@{ tools = $list })
+            }
             'tools/call' {
                 $name = [string](Get-Prop $params 'name')
                 $arguments = Get-Prop $params 'arguments'
+                $watch = [Diagnostics.Stopwatch]::StartNew()
                 $r = Invoke-Tool $name $arguments
+                $seconds = $watch.Elapsed.TotalSeconds.ToString('0.0', [Globalization.CultureInfo]::InvariantCulture)
                 $label = $script:CodeNames[[int]$r.Code]
                 if (-not $label) { $label = 'exit ' + $r.Code }
-                $text = ('[unity-slot exit {0}: {1}]' -f $r.Code, $label) + "`n" + $r.Text
+                Write-Log ('tools/call {0} {1}s exit {2}' -f $name, $seconds, $r.Code)
+                $text = ('[unity-slot exit {0}: {1}, {2}s]' -f $r.Code, $label, $seconds) + "`n" + $r.Text
                 Send-Result $id ([ordered]@{
                         content = @([ordered]@{ type = 'text'; text = $text })
                         isError = ($script:ErrorCodes -contains [int]$r.Code)
