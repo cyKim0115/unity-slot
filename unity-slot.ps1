@@ -16,6 +16,8 @@ Open and close Unity editors for clone folders on demand, and show what is open.
   unity-slot.ps1 renew     <slot> [-Owner <id>] [-Hours 8]
   unity-slot.ps1 new-clone <purpose|platform> [-Project <repo>] [-From <slot>] [-Name <repo>-<n>]
                            [-CloneRoot <dir>] [-NoOpen] [-Apply]
+  unity-slot.ps1 prepare   <origin URL|owner/repo|slot|clone> [-Count 2] [-BuildTarget <platform>]
+                           [-CloneRoot <dir>] [-NoOpen] [-Apply]
   unity-slot.ps1 hooks     [<slot|clone> -HookEvent <event>]
   unity-slot.ps1 dashboard -Json [-Git basic|full]
   unity-slot.ps1 <extra command from the config> ...
@@ -41,6 +43,10 @@ acquire   Leases a free slot that fits, then opens its editor (lib\lease.ps1). E
 release   Closes the editor of an on-demand slot and drops the lease. Only the lease owner.
 renew     Extends a lease.
 new-clone Plans (dry run) or, with -Apply, makes a new clone slot (lib\newclone.ps1).
+prepare   Gets a project ready on a PC (lib\prepare.ps1): a base clone (git clone of the origin URL, or
+          a registered slot), registered, opened once to import and closed, then agent clones until the
+          project has -Count (2) agent slots of its platform, each opened once and closed. Dry run
+          unless -Apply; a second run goes on where the last one stopped.
 hooks     Shows the config file, the hooks per event and the extra commands; with a slot and
           -HookEvent it runs that event's hooks for the slot now (lib\config.ps1).
 dashboard One read-only JSON document for widgets and agents (schema unity-slot.dashboard/1):
@@ -122,6 +128,9 @@ param(
     # where new-clone puts the clone; default: config "cloneRoot", else next to the template clone
     [string]$CloneRoot,
 
+    # prepare: how many agent slots of the base's platform the project should have (existing ones count)
+    [int]$Count = 2,
+
     # hooks: skip all of them, or the named ones
     [switch]$NoHooks,
     [string[]]$SkipHook,
@@ -137,18 +146,20 @@ param(
     [switch]$Apply
 )
 
-$script:UnitySlotVersion = '0.5.6'
+$script:UnitySlotVersion = '0.6.1'
 $script:ExitCode = 0
 $script:LastOpenPid = 0
 $script:LastStartupPhase = $null
 $script:PendingHooksFailed = $false
 $script:LastCloseDetail = $null
+# prepare: a clone-relative file open writes the started editor's pid to ('' = none)
+$script:StartedPidFile = ''
 $script:Bound = $PSBoundParameters
 $script:Inv = [Globalization.CultureInfo]::InvariantCulture
 $script:SecretFlags = 'accessToken|hubSessionId|cbmEditorLicense|cbmMachineId'
 
 $script:SlotRepo = $PSScriptRoot
-foreach ($lib in @('config', 'registry', 'lease', 'newclone', 'dashboard', 'summary')) { . (Join-Path $PSScriptRoot ('lib\' + $lib + '.ps1')) }
+foreach ($lib in @('config', 'registry', 'lease', 'newclone', 'prepare', 'dashboard', 'summary')) { . (Join-Path $PSScriptRoot ('lib\' + $lib + '.ps1')) }
 
 # ------------------------------------------------------------------ output and masking
 
@@ -911,6 +922,9 @@ function Invoke-Open([string]$ClonePath, [int]$Timeout = 0, [string]$BuildTarget
     }
     $editorPid = [int]$r.ProcessId
     $script:LastOpenPid = $editorPid
+    if ($script:StartedPidFile) {
+        try { [IO.File]::WriteAllText((Join-Path $clone $script:StartedPidFile), ('pid={0} started={1}' -f $editorPid, (Format-Time $t0))) } catch { }
+    }
     Say ('started pid {0} at {1}: {2}' -f $editorPid, (Format-Time $t0), (Protect-Text $cmdLine))
     try { Save-OpenSnapshot $clone $editorPid $t0 $git }
     catch { Say ('note    could not save Logs\unity-slot-open.txt ({0}); close will only compare the close itself' -f $_.Exception.Message) }
@@ -1291,6 +1305,7 @@ try {
         'release' { Invoke-Release }
         'renew' { Invoke-Renew }
         'new-clone' { Invoke-NewClone }
+        'prepare' { Invoke-Prepare }
         'hooks' { Invoke-Hooks }
         default {
             # an extra command from the config: dot-source its file here (script scope), then call it

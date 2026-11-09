@@ -40,7 +40,12 @@ function Invoke-Summary {
     foreach ($s in @(Select-RegistrySlots $reg)) { $wanted[$s.name.ToLowerInvariant()] = $true }
     $doc = Get-DashboardDocument
     $sys = $doc.system
-    Write-Host ('unity-slot  editors {0}/{1} | commit {2}% ({3}/{4}GB)' -f $sys.editorsOpen, $doc.registry.maxEditors, $sys.commit.percent,
+    # editorsOpen counts every editor (memory does not care whose); the ones of no registered slot are
+    # named so that "2/6" next to a table of closed slots is not a puzzle
+    $outside = @(@($doc.unregisteredEditors) | Where-Object { $null -ne $_ -and [string]$_.kind -eq 'editor' }).Count
+    $outsideText = ''
+    if ($outside -gt 0) { $outsideText = ' ({0} outside the registry)' -f $outside }
+    Write-Host ('unity-slot  editors {0}/{1}{2} | commit {3}% ({4}/{5}GB)' -f $sys.editorsOpen, $doc.registry.maxEditors, $outsideText, $sys.commit.percent,
         (Format-Num $sys.commit.usedGB), (Format-Num $sys.commit.limitGB))
     $rows = New-Object 'System.Collections.Generic.List[object]'
     $flagLines = New-Object 'System.Collections.Generic.List[string]'

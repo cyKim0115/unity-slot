@@ -114,10 +114,11 @@ $script:Tools = @(
             'work that needs no editor. Waits up to timeout_sec (default 45, at most 55) for a starting editor. READY: make ' +
             'the set_active_instance call of the "pin" line before any Unity MCP call, then go on. ' +
             'STARTING: call again. STALLED (over 5 minutes): it lists the dialogs; hand it to the user, never click. ' +
-            'NOT RUNNING: it is not open. If the result has a "warn capacity" line, tell the user.') ([ordered]@{
+            'NOT RUNNING: it is not open. If the result has a "warn capacity" line, tell the user. The first READY of a new ' +
+            'or renamed clone runs its afterFirstOpen hooks, which may write agent files into that clone (one "hook" line).') ([ordered]@{
             slot        = (New-Prop 'string' 'Slot name or clone path.')
             timeout_sec = (New-Prop 'number' 'Seconds to wait in this call (1 to 55, default 45).')
-        }) @('slot') (New-Hints 'Wait for a slot editor' $true $false $true $false)),
+        }) @('slot') (New-Hints 'Wait for a slot editor' $false $false $true $false)),
     (New-Tool 'close' ('Close a slot editor like clicking X: Unity saves, nothing is killed. Refuses when a beforeClose ' +
             'hook says not to close now (for example unsaved scenes: save or discard first, as its message says). ' +
             'Reports files written by the close and files changed while it was open; never reverts them. ' +

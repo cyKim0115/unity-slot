@@ -194,7 +194,7 @@ function Get-SlotEnvVars($E) {
     return @{
         UNITY_SLOT_HOME = $E.Home; UNITY_SLOT_CONFIG = $E.Config; UNITY_SLOT_OWNER = 'tester'
         UNITY_SLOT_VIA = $null; UNITY_SLOT_MCP_OWNER = $null; UNITY_SLOT_PYTHON = $null; UNITY_SLOT_COMMIT_OVERRIDE = $null
-        CLAUDE_CODE_SESSION_ID = $null
+        CLAUDE_CODE_SESSION_ID = $null; CODEX_THREAD_ID = $null
         # MCP for Unity status files of this environment, not the real ones in %USERPROFILE%\.unity-mcp
         UNITY_SLOT_UNITY_MCP_DIR = (Join-Path $E.Dir 'unity-mcp')
     }

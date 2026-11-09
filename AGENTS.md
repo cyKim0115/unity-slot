@@ -7,6 +7,7 @@ unity-slot registers Unity project clones as slots and opens and closes their ed
 - `lib\registry.ps1`: the registry (`%USERPROFILE%\.unity-slot\slots.json`), detection, scan, slots, set
 - `lib\lease.ps1`: leases (`leases\<slot>.json`), acquire, release, renew
 - `lib\newclone.ps1`: the new-clone plan (dry run) and `-Apply`
+- `lib\prepare.ps1`: prepare (a project ready on a new PC: base clone, first import, agent clones; resumable)
 - `lib\dashboard.ps1`: the dashboard document (schema `unity-slot.dashboard/1`), `events.jsonl`, `install.json`, the one-look readiness check
 - `lib\summary.ps1`: the short status (`summary`, the MCP `status` default), drawn from the dashboard document
 - `mcp\unity-slot-mcp.ps1`: stdio MCP server. A thin shell that runs `unity-slot.ps1` per tool call; no logic of its own.

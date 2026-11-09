@@ -47,6 +47,13 @@ $writer = [string](Get-Field $data 'ScriptPath')
 if ($writer) {
     $writerPath = $writer
     if (-not [IO.Path]::IsPathRooted($writerPath)) { $writerPath = Join-Path $Clone $writerPath }
+    # A full path from a compiler ([CallerFilePath]) keeps the folder the assemblies were built in, so
+    # after a clone is renamed or moved it points outside the clone: look for the same Assets/ or
+    # Packages/ file in this clone before calling the writer gone.
+    if (-not (Test-Path -LiteralPath $writerPath)) {
+        $m = [regex]::Match($writer.Replace('\', '/'), '(?i)/((?:Assets|Packages)/.+)$')
+        if ($m.Success -and (Test-Path -LiteralPath (Join-Path $Clone $m.Groups[1].Value))) { $writerPath = Join-Path $Clone $m.Groups[1].Value }
+    }
     if (-not (Test-Path -LiteralPath $writerPath)) { Write-Output 'scenes  unknown (beacon writer script is gone, record may be stale); closing'; exit 0 }
 }
 $unsaved = New-Object 'System.Collections.Generic.List[string]'

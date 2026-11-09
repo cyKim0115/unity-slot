@@ -29,7 +29,7 @@ $script:HookEventHelp = [ordered]@{
     afterClone     = 'new-clone made and registered a clone (before its first open)'
     afterFirstOpen = 'a new clone''s editor is READY for the first time (new-clone, open or wait)'
 }
-$script:BuiltinCommands = @('open', 'wait', 'close', 'status', 'slots', 'summary', 'scan', 'set', 'acquire', 'release', 'renew', 'new-clone', 'hooks', 'dashboard')
+$script:BuiltinCommands = @('open', 'wait', 'close', 'status', 'slots', 'summary', 'scan', 'set', 'acquire', 'release', 'renew', 'new-clone', 'prepare', 'hooks', 'dashboard')
 $script:ConfigCache = $null
 $script:ConfigFileUsed = $null
 $script:Utf8NoBom = New-Object Text.UTF8Encoding($false)
@@ -237,8 +237,10 @@ function Get-HookVars([string]$Clone, [int]$EditorPid = 0, [string]$Log = '') {
     return $vars
 }
 
-# Runs the hooks of one event in order and prints what each one said (masked).
-function Invoke-SlotHooks([string]$EventName, $Vars) {
+# Runs the hooks of one event in order and prints what each one said (masked). -Brief (the pending
+# afterFirstOpen hooks inside a READY result): a hook that exits 0 gets one line with its output's line
+# count and last line instead of its command line and output; any other result is shown in full.
+function Invoke-SlotHooks([string]$EventName, $Vars, [switch]$Brief) {
     $result = [pscustomobject]@{
         Ran     = 0
         Refused = (New-Object 'System.Collections.Generic.List[string]')
@@ -262,11 +264,19 @@ function Invoke-SlotHooks([string]$EventName, $Vars) {
         if ($run.Count -eq 0) { Say ('hook    {0}/{1}: no "run" in the config; skipped' -f $EventName, $name); $result.Failed.Add($name); continue }
         $timeout = [int](Get-Prop $h 'timeoutSec')
         if ($timeout -le 0) { $timeout = Get-TimeoutSetting 'hook' 120 }
-        Say ('hook    {0}/{1}: {2}' -f $EventName, $name, (Protect-Text ($run -join ' ')))
+        if (-not $Brief) { Say ('hook    {0}/{1}: {2}' -f $EventName, $name, (Protect-Text ($run -join ' '))) }
         $r = $null
         try { $r = Start-HookProcess $run $envVars $timeout $all['clone'] }
         catch { Say ('hook    {0}/{1}: could not start: {2}' -f $EventName, $name, $_.Exception.Message); $result.Failed.Add($name); continue }
         $result.Ran++
+        if ($Brief -and -not $r.TimedOut -and $r.Code -eq 0) {
+            $out = @(@($r.Lines) | ForEach-Object { [string]$_ } | Where-Object { $_.Trim() })
+            $tail = ''
+            if ($out.Count -gt 0) { $tail = ' ({0} output line(s), last: {1})' -f $out.Count, (Protect-Text $out[$out.Count - 1].Trim()) }
+            Say ('hook    {0}/{1}: exit 0{2}' -f $EventName, $name, $tail)
+            continue
+        }
+        if ($Brief) { Say ('hook    {0}/{1}: {2}' -f $EventName, $name, (Protect-Text ($run -join ' '))) }
         $shown = @($r.Lines)
         if ($shown.Count -gt 40) { Say ('  ... {0} earlier line(s)' -f ($shown.Count - 40)); $shown = @($shown | Select-Object -Last 40) }
         foreach ($l in $shown) { Say ('  ' + (Protect-Text ([string]$l))) }
@@ -298,7 +308,7 @@ function Invoke-PendingHooks([string]$Clone, [int]$EditorPid, [string]$Log) {
     $slot.pendingHooks = [string[]]@()
     Write-Registry $reg
     foreach ($ev in $events) {
-        $r = Invoke-SlotHooks $ev (Get-HookVars $Clone $EditorPid $Log)
+        $r = Invoke-SlotHooks $ev (Get-HookVars $Clone $EditorPid $Log) -Brief
         if ($r.Failed.Count -gt 0 -or $r.Refused.Count -gt 0) {
             $script:PendingHooksFailed = $true
             if (Test-ViaMcp) {

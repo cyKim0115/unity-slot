@@ -104,19 +104,20 @@ A stalled editor is left as it is: unity-slot shows its windows and the `openSta
 | `close <slot\|clone> [-AllowDirty]` | Runs the beforeClose hooks, asks the editor to quit (same as clicking X), waits, then reports child processes that still run and files git sees as written by the close or changed while it was open. |
 | `status [-Json] [-ShowCommandLine]` | Open editors with their child processes and memory (private / working set). |
 | `slots [<slot>] [-Project <repo>] [-Json]` | The registry with each slot's state and lease; a slot or `-Project` narrows it. |
-| `summary [<slot>] [-Project <repo>]` | A short status: open editors of the maximum and the commit, one table (slot, platform, mode, state, lease, agent use), warnings and lease notes (`note`), with the dashboard's states and flags. It skips what the table does not show (git, event history, memory), so it is faster than the dashboard (about 1.3 s on the test machine). The MCP `status` tool shows this by default. |
+| `summary [<slot>] [-Project <repo>]` | A short status: open editors of the maximum and the commit, one table (slot, platform, mode, state, lease, agent use), warnings and lease notes (`note`), with the dashboard's states and flags. It skips what the table does not show (git, event history, memory), so it is faster than the dashboard (about 1.3 s on the test machine). The editor count covers every Unity editor; editors of no registered slot add `(N outside the registry)`. The MCP `status` tool shows this by default. |
 | `scan [-ScanRoot <dir>[,...]] [-Project <owner/repo>[,...]] [-Apply]` | Finds Unity projects under the scan roots, registers clones of the chosen projects and refreshes detected facts. |
 | `set <slot> [-Purpose a,b] [-Mode hot\|ondemand] [-AgentUse true\|false] [-Memo <text>] [-BuildTarget <platform>]` | Changes your fields of a slot. |
 | `acquire <purpose\|platform> [-Project <repo>] [-Owner <id>] [-Hours 8] [-NoOpen \| -NoWait]` | Leases a free slot that fits and opens its editor. Exit 5 when none is free. |
 | `release <slot> [-Owner <id>] [-KeepOpen] [-AnyOwner]` | Closes the editor of an on-demand slot (a hot slot stays open) and drops the lease. Only the lease owner may release; `-AnyOwner` only when a person says so. |
 | `renew <slot> [-Owner <id>] [-Hours 8]` | Extends a lease. |
 | `new-clone <purpose\|platform> [-Project <repo>] [-From <slot>] [-Name <repo>-<n>] [-CloneRoot <dir>] [-NoOpen] [-Apply]` | Plans another clone (dry run). With `-Apply` it makes it: see [New clones](#new-clones). |
+| `prepare <origin URL\|owner/repo\|slot\|clone> [-Count 2] [-BuildTarget <platform>] [-CloneRoot <dir>] [-NoOpen] [-Apply]` | Gets a project ready to use on this PC: a base clone, its first import, and `-Count` agent clones. Shows the plan; `-Apply` does it. See [A new PC](#a-new-pc). |
 | `hooks [<slot> -HookEvent <event>]` | Shows the config file in use, the hooks per event and the extra commands. With a slot and `-HookEvent` it runs that event's hooks now. |
 | `dashboard -Json [-Git basic\|full]` | One read-only JSON document for widgets and agents: see [Dashboard JSON](#dashboard-json). |
 | `<extra command>` | A command your config adds (see [Extra commands](#extra-commands)). |
 
 Options for any command: `-NoHooks` skips every hook, `-SkipHook a,b` skips the named ones, `-TimeoutSec`, `-StandbyWorkers`, `-EditorRoot`, `-Python`.
-`-Project` accepts `owner/repo`, the repository name, or the end of it. `-Owner` defaults to `UNITY_SLOT_OWNER`, then `claude:<first 8 characters of CLAUDE_CODE_SESSION_ID>`, then `user@host`.
+`-Project` accepts `owner/repo`, the repository name, or the end of it. `-Owner` defaults to `UNITY_SLOT_OWNER`, then `claude:<first 8 characters of CLAUDE_CODE_SESSION_ID>`, then `codex:<last 8 characters of CODEX_THREAD_ID>` (Codex shell commands), then `user@host`. A Codex thread id starts with a timestamp, so its random end is used.
 
 Exit codes: 0 ok (including "already open" and "already closed"), 1 error, 2 timed out (the editor is left running), 3 editor version not installed, 4 refused (lock held, a beforeClose hook, a batchmode run, someone else's lease, a platform switch, a failed new-clone check), 5 no free slot, 6 still starting.
 
@@ -217,6 +218,24 @@ flowchart TD
 
 It never runs `git clean -x`, `git stash -a`, commits to the project repository, or switches a platform.
 
+## A new PC
+
+On a new PC, or for a project without clones, `prepare` gets everything going in one command. Agents have slots to take from the start, and the first import is done, so acquire is quick.
+
+```powershell
+.\unity-slot.ps1 prepare https://github.com/my-org/my-game.git -BuildTarget Android            # plan only
+.\unity-slot.ps1 prepare https://github.com/my-org/my-game.git -BuildTarget Android -Apply     # do it
+```
+
+1. **Base clone.** A registered slot or clone folder as named. For an origin URL, the project's `main` slot, else `git clone <origin> <cloneRoot>\<repo>`.
+2. **Register.** The same draft as scan: a folder without a suffix is `main`, not for agents.
+3. **First open.** Without a Library the base is opened once with `-BuildTarget` to import everything (up to `timeouts.firstOpen`, 40 minutes) and closed when it is ready. Without a Library and without `-BuildTarget` it stops. A `-BuildTarget` that would switch the platform is refused.
+4. **Agent clones.** `new-clone agent -From <base>` (Library copy, afterClone hooks) until the project has `-Count` (2) agent slots of that platform, each opened once and closed when ready (afterFirstOpen hooks). `-NoOpen` leaves them unopened.
+
+- **Going on.** Each step looks at what is already there and skips it. When an agent's shell is cut off by a time limit, the editor keeps running; running the same command again waits for that editor, closes it and goes on. An editor prepare started has its pid in `Logs\unity-slot-prepare.txt`. An editor someone else opened is never closed: prepare stops. An open base also stops it, because new clones copy its Library only while it is closed.
+- **Time.** A large project takes tens of minutes to clone and import. Run it in a person's terminal, or run it again when it is cut off.
+- The agent slots get the purpose `agent`, so Claude Code, Codex and Cursor all take them with `acquire agent`.
+
 ## MCP server
 
 [mcp/unity-slot-mcp.ps1](mcp/unity-slot-mcp.ps1) is a stdio MCP server (JSON-RPC, one message per line) for coding agents. It needs nothing besides Windows PowerShell 5.1. Each tool call runs `unity-slot.ps1` in a child process and returns its text, so all logic stays in one place. The client starts the server per session and it ends when stdin closes.
@@ -226,14 +245,14 @@ It never runs `git clean -x`, `git stash -a`, commits to the project repository,
 | `status` | The short summary (as `summary`: a line with editors and commit, one table, warnings); `slot` or `project` narrow it. `format=json` returns the registry as JSON instead, `processes=true` editor processes and memory, `dashboard=true` (with `git=basic\|full`) the [dashboard document](#dashboard-json). |
 | `acquire` | Leases a free slot for a purpose and starts its editor without waiting. |
 | `open` | Starts a slot's editor and returns at once. |
-| `wait_ready` | Waits up to 55 s per call: READY, STARTING (call again; last phase and import workers), STALLED, NOT RUNNING. |
+| `wait_ready` | Waits up to 55 s per call: READY, STARTING (call again; last phase and import workers), STALLED, NOT RUNNING. The first READY of a new or renamed clone runs its afterFirstOpen hooks (they may write agent files into the clone); a hook that succeeds shows one line. |
 | `close` | Closes like clicking X. `discard_unsaved=true` uses the official Unity CLI (`unity close`, no save; projects with `com.unity.pipeline` only) and is only for when a person said to drop changes. |
 | `release` | Releases a slot you acquired. After the MCP server restarted, pass the owner your acquire showed as `owner`. |
 | `create` | Plans a new clone (`new-clone -NoOpen`, so the plan shows the first open as open + wait_ready); `confirm=true` creates it (`-Apply`) after a person agreed to the plan. The clone always gets the generic `<repo>-<n>` name (no name argument). |
 
 Tool calls stay short: open and acquire return right after the launch and wait_ready is called until READY, so no call sits on a client's tool timeout while Unity starts.
 
-The lease owner is `claude:<session>` under Claude Code, which gives the MCP server its session id, so the owner stays the same when the server restarts. Codex passes only a fixed list of environment variables and Cursor passes no conversation or session id (checked 2026-11), so other clients get `<client name>:<random>`, a new id whenever the server restarts. Leases taken over MCP therefore record the client process (name, pid, start time), and `status` and a refused `release` add a note:
+The lease owner is `claude:<session>` under Claude Code, which gives the MCP server its session id, so the owner stays the same when the server restarts (the CLI outside MCP uses the same id; the CLI run from a Codex shell is `codex:<last 8 characters of the thread id>`). Codex passes only a fixed list of environment variables and Cursor passes no conversation or session id (checked 2026-11), so other clients get `<client name>:<random>`, a new id whenever the server restarts. Leases taken over MCP therefore record the client process (name, pid, start time), and `status` and a refused `release` add a note:
 
 - A lease held by another id of the same client name: if this conversation acquired it before the server restarted (its acquire result showed that owner), call `release(slot="X", owner="<that owner>")`; otherwise it is another conversation's, so leave it.
 - A lease whose client process has exited: orphaned (`lease-client-gone`), so hand it to the user, who releases it with the CLI `release <slot> -AnyOwner`.
@@ -294,7 +313,7 @@ tool_timeout_sec = 300
   "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "C:\\path\\to\\unity-slot\\mcp\\unity-slot-mcp.ps1"] } } }
 ```
 
-The tools carry MCP annotations (protocol 2025-03-26 and later; a client on 2024-11-05 gets the tools without them): `status` and `wait_ready` are read-only; `acquire`, `open` and `create` change things but are not destructive (`create` reaches the network through `git clone`); `close` and `release` are marked destructive because they close an editor and `close` can drop unsaved changes with `discard_unsaved`. Hints do not grant anything: a client may still ask before a call, and in a non-interactive run (for example `codex exec`) the tools may need to be allowed in the client's approval settings.
+The tools carry MCP annotations (protocol 2025-03-26 and later; a client on 2024-11-05 gets the tools without them): `status` is read-only; `wait_ready` (the afterFirstOpen hooks of a first READY may write files), `acquire`, `open` and `create` change things but are not destructive (`create` reaches the network through `git clone`); `close` and `release` are marked destructive because they close an editor and `close` can drop unsaved changes with `discard_unsaved`. Hints do not grant anything: a client may still ask before a call, and in a non-interactive run (for example `codex exec`) the tools may need to be allowed in the client's approval settings.
 
 A rule for agents can be this short: "Decide first whether the task needs the Unity editor; if you are not sure, do not open one. If it does, pull or switch branches while it is closed, then acquire a slot (purpose, project) before planning or research. While the editor starts (12 s to minutes), read code, research and plan, but edit Unity assets or scripts only after READY. When you need the editor, call wait_ready until READY, pin your Unity MCP to it with the `set_active_instance` call of the `pin` line, check that `Application.dataPath` is that slot, work, then release it. Take several slots together only while the commit is below the high mark (no `warn capacity` line), else one after another. Never switch platforms, never take slots leased by others, hand stalls to the user."
 
@@ -351,7 +370,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1 -List
 
 - **Stub.** `tests\stub\UnityStub.cs` is built with the .NET Framework compiler that ships with Windows (`csc.exe`). It reads `-projectPath`, `-logFile`, `-standbyWorkerCount` and `-buildTarget` and imitates a Unity-style window title, `Temp\UnityLockfile`, the `##utp` `ProjectInfo` line in Editor.log, closing on X (CloseMainWindow), dialogs with native buttons, the scene beacon and import workers (`-parentPid`). Its behavior comes from a control file in the clone, `Temp\unity-stub.txt`: `normal`, `never-ready`, `dialog`, `slow-close`, `ignore-close`, `dirty`, `exit-early`. A process started through WMI does not get the caller's environment, so there are no environment switches.
 - **Isolation.** The test folder (default `%TEMP%\unity-slot-tests\<time>`) holds the stub, a local bare origin and fake clones (`MyGame`, `MyGame-1`, `MyGame-2`, `MyGame-Web`); each group gets its own `UNITY_SLOT_HOME` and `UNITY_SLOT_CONFIG`. The fake clones use Unity version `9999.0.0f1`, so no real editor can open. Before and after a run it checks that the real `slots.json` and `install.json` kept their time stamp and hash.
-- **Groups.** `lease` (leases, races, taking over expired leases, no free slot, hot slots), `close` (refused close, timeouts, batchmode, lock file), `start` (STARTING, STALLED, the dialog list, `-TimeoutSec`, versions, platforms), `report` (`events.jsonl`, the `install.json` pointer, the dashboard, secrets), `mcp` (protocol, a lease flow), `phase2` (MCP next steps, call times, annotations, the status summary, capacity warnings, startup phases; improvements not in the core yet are SKIP). Groups run in separate processes, three at a time; the tests of a group run one after another.
+- **Groups.** `lease` (leases, races, taking over expired leases, no free slot, hot slots), `close` (refused close, timeouts, batchmode, lock file), `start` (STARTING, STALLED, the dialog list, `-TimeoutSec`, versions, platforms), `report` (`events.jsonl`, the `install.json` pointer, the dashboard, secrets), `mcp` (protocol, a lease flow), `phase2` (MCP next steps, call times, annotations, the status summary, capacity warnings, startup phases; improvements not in the core yet are SKIP), `prepare` (a base clone from the origin, its first open and two agent clones, a second run, finishing a run that was cut off, refusing someone else's editor and a platform switch). Groups run in separate processes, three at a time; the tests of a group run one after another.
 - **Results.** Each test prints PASS, FAIL, KNOWN or SKIP and its time; exit 0 when nothing failed. KNOWN marks a reproduction of a core problem listed in [tests/FINDINGS.md](tests/FINDINGS.md). When everything passed the test folder is deleted, otherwise it stays (`envs\<group>\cli.log` has the output of every run).
 - **Rules kept.** No process is killed, stubs included: a test asks a stub to end through its control file, and a stub that does not end is only reported (it ends by itself after 10 minutes). Dialogs are listed, never clicked. Stub windows open off screen without taking the focus, and they make no sound.
 - **App-package shells.** A shell of an app installed as an MSIX package writes to AppData through a private copy, which a stub started through WMI cannot see. From such a shell the run refuses a test folder under AppData; pass `-Root` with another folder.

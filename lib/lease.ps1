@@ -9,12 +9,18 @@ function Get-LeaseDir { return (Join-Path (Get-SlotHome) 'leases') }
 
 function Get-LeaseFile([string]$SlotName) { return (Join-Path (Get-LeaseDir) ($SlotName + '.json')) }
 
-# Who holds a lease: -Owner, $env:UNITY_SLOT_OWNER, the Claude Code session id, or user@host.
+# Who holds a lease: -Owner, $env:UNITY_SLOT_OWNER, the Claude Code session id, the Codex thread id
+# (CODEX_THREAD_ID in its shell commands), or user@host. Without the Codex id a Codex shell and the
+# person at the keyboard would both be user@host and share each other's leases. Claude's id is a
+# random UUID (its start is fine); Codex's is a UUID v7 whose start is a timestamp, the same for two
+# threads started within about a minute, so its owner takes the random end.
 function Resolve-Owner {
     if (-not [string]::IsNullOrWhiteSpace($Owner)) { return $Owner.Trim() }
     if (-not [string]::IsNullOrWhiteSpace($env:UNITY_SLOT_OWNER)) { return $env:UNITY_SLOT_OWNER.Trim() }
     $id = $env:CLAUDE_CODE_SESSION_ID
     if (-not [string]::IsNullOrWhiteSpace($id)) { return ('claude:' + $id.Substring(0, [Math]::Min(8, $id.Length))) }
+    $id = ([string]$env:CODEX_THREAD_ID).Replace('-', '').Trim()
+    if ($id) { return ('codex:' + $id.Substring([Math]::Max(0, $id.Length - 8))) }
     return ('{0}@{1}' -f $env:USERNAME, $env:COMPUTERNAME)
 }
 

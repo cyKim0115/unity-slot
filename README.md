@@ -104,19 +104,20 @@ stateDiagram-v2
 | `close <슬롯\|클론> [-AllowDirty]` | beforeClose 훅을 돌리고, X 버튼처럼 닫기를 요청하고, 기다린 뒤 남은 자식 프로세스와 git이 보는 변경(닫으며 쓴 파일, 열린 동안 바뀐 파일)을 알려 줍니다. |
 | `status [-Json] [-ShowCommandLine]` | 열린 에디터와 자식 프로세스, 메모리(Private/작업 집합)를 보여 줍니다. |
 | `slots [<슬롯>] [-Project <repo>] [-Json]` | 등록부와 슬롯별 상태·임대를 보여 줍니다. 슬롯이나 `-Project`로 좁힐 수 있습니다. |
-| `summary [<슬롯>] [-Project <repo>]` | 짧은 상태를 보여 줍니다: 열린 에디터 수/최대·커밋 한 줄, 표 하나(슬롯·플랫폼·운용·상태·임대·에이전트 사용), 경고, 임대 안내(`note`). 상태와 경고는 대시보드 판정을 쓰되 표에 없는 git·이벤트 이력·메모리는 읽지 않아 대시보드보다 빠릅니다(시험 기기 약 1.3초). MCP `status` 도구의 기본 출력입니다. |
+| `summary [<슬롯>] [-Project <repo>]` | 짧은 상태를 보여 줍니다: 열린 에디터 수/최대·커밋 한 줄, 표 하나(슬롯·플랫폼·운용·상태·임대·에이전트 사용), 경고, 임대 안내(`note`). 상태와 경고는 대시보드 판정을 쓰되 표에 없는 git·이벤트 이력·메모리는 읽지 않아 대시보드보다 빠릅니다(시험 기기 약 1.3초). 에디터 수는 모든 Unity 에디터를 세고, 등록된 슬롯이 아닌 에디터가 있으면 `(N outside the registry)`를 붙입니다. MCP `status` 도구의 기본 출력입니다. |
 | `scan [-ScanRoot <폴더>[,...]] [-Project <owner/repo>[,...]] [-Apply]` | 스캔 루트 아래 Unity 프로젝트를 찾아 고른 프로젝트의 클론을 등록하고, 감지한 값을 새로 고칩니다. |
 | `set <슬롯> [-Purpose a,b] [-Mode hot\|ondemand] [-AgentUse true\|false] [-Memo <글>] [-BuildTarget <플랫폼>]` | 슬롯에서 사람이 정하는 칸을 바꿉니다. |
 | `acquire <용도\|플랫폼> [-Project <repo>] [-Owner <id>] [-Hours 8] [-NoOpen \| -NoWait]` | 맞는 빈 슬롯을 임대하고 에디터를 엽니다. 없으면 exit 5. |
 | `release <슬롯> [-Owner <id>] [-KeepOpen] [-AnyOwner]` | 온디맨드 슬롯이면 에디터를 닫고(hot 슬롯은 열어 둡니다) 임대를 풉니다. 임대 주인만 할 수 있습니다. `-AnyOwner`는 사람이 시킬 때만 쓰세요. |
 | `renew <슬롯> [-Owner <id>] [-Hours 8]` | 임대를 늘립니다. |
 | `new-clone <용도\|플랫폼> [-Project <repo>] [-From <슬롯>] [-Name <repo>-<번호>] [-CloneRoot <폴더>] [-NoOpen] [-Apply]` | 새 클론 계획(dry-run)을 보여 줍니다. `-Apply`면 만듭니다. [새 클론](#새-클론) 참고. |
+| `prepare <origin URL\|owner/repo\|슬롯\|클론> [-Count 2] [-BuildTarget <플랫폼>] [-CloneRoot <폴더>] [-NoOpen] [-Apply]` | 한 프로젝트를 이 PC에서 바로 쓸 수 있게 준비합니다: 기준 클론, 첫 임포트, 에이전트 클론 `-Count`개. 계획만 보여 주고 `-Apply`면 합니다. [새 PC 준비](#새-pc-준비) 참고. |
 | `hooks [<슬롯> -HookEvent <이벤트>]` | 쓰는 설정 파일, 이벤트별 훅, 추가 명령을 보여 줍니다. 슬롯과 `-HookEvent`를 주면 그 이벤트의 훅을 지금 돌립니다. |
 | `dashboard -Json [-Git basic\|full]` | 위젯·에이전트용 읽기 전용 JSON 문서 하나를 냅니다. [대시보드 JSON](#대시보드-json) 참고. |
 | `<추가 명령>` | 설정에서 더한 명령([추가 명령](#추가-명령)). |
 
 모든 명령에 쓰는 옵션: `-NoHooks`(훅 모두 건너뜀), `-SkipHook a,b`(이름으로 건너뜀), `-TimeoutSec`, `-StandbyWorkers`, `-EditorRoot`, `-Python`.
-`-Project`에는 `owner/repo`, 저장소 이름, 그 이름의 끝을 쓸 수 있습니다. `-Owner` 기본값은 `UNITY_SLOT_OWNER`, 없으면 `claude:<CLAUDE_CODE_SESSION_ID 앞 8자>`, 없으면 `user@host`입니다.
+`-Project`에는 `owner/repo`, 저장소 이름, 그 이름의 끝을 쓸 수 있습니다. `-Owner` 기본값은 `UNITY_SLOT_OWNER`, 없으면 `claude:<CLAUDE_CODE_SESSION_ID 앞 8자>`, 없으면 `codex:<CODEX_THREAD_ID 끝 8자>`(Codex 셸 명령), 없으면 `user@host`입니다. Codex 스레드 ID는 앞부분이 시각이라 끝(무작위)을 씁니다.
 
 종료 코드: 0 정상(「이미 열림」·「이미 닫힘」 포함), 1 오류, 2 시간 초과(에디터는 그대로 둠), 3 에디터 버전 미설치, 4 거부(잠금, beforeClose 훅, batchmode 실행, 남의 임대, 플랫폼 전환, new-clone 점검 실패), 5 빈 슬롯 없음, 6 아직 시작 중.
 
@@ -217,6 +218,24 @@ flowchart TD
 
 `git clean -x`, `git stash -a`, 프로젝트 저장소 커밋, 플랫폼 전환은 하지 않습니다.
 
+## 새 PC 준비
+
+새 PC나 클론이 없는 프로젝트는 `prepare` 한 번으로 시작합니다. 에이전트가 처음부터 잡을 슬롯이 있고, 첫 임포트도 끝나 있어 acquire가 빠릅니다.
+
+```powershell
+.\unity-slot.ps1 prepare https://github.com/my-org/my-game.git -BuildTarget Android            # 계획만
+.\unity-slot.ps1 prepare https://github.com/my-org/my-game.git -BuildTarget Android -Apply     # 실행
+```
+
+1. **기준 클론.** 대상이 등록된 슬롯이나 클론 폴더면 그것을 씁니다. origin URL이면 그 프로젝트의 `main` 슬롯을 쓰고, 없으면 `git clone <origin> <cloneRoot>\<repo>`로 받습니다.
+2. **등록.** scan과 같은 초안입니다. 접미사가 없는 폴더는 `main`이고 에이전트용이 아닙니다.
+3. **첫 열기.** Library가 없으면 `-BuildTarget`으로 한 번 열어 전부 임포트하고(최대 `timeouts.firstOpen`, 40분), 준비되면 닫습니다. Library가 없는데 `-BuildTarget`이 없으면 멈춥니다. 플랫폼을 바꾸게 되는 `-BuildTarget`은 거부합니다.
+4. **에이전트 클론.** 그 프로젝트의 같은 플랫폼 에이전트 슬롯이 `-Count`(기본 2)개가 될 때까지 `new-clone agent -From <기준>`을 합니다(Library 복사, afterClone 훅). 하나씩 한 번 열어 준비되면 닫습니다(afterFirstOpen 훅). `-NoOpen`이면 열지 않습니다.
+
+- **이어서 하기.** 단계마다 이미 된 것을 보고 건너뜁니다. 에이전트 셸이 시간 제한으로 끊겨도 에디터는 계속 돌므로, 같은 명령을 다시 돌리면 그 에디터를 기다렸다가 닫고 이어 갑니다. prepare가 띄운 에디터는 `Logs\unity-slot-prepare.txt`에 pid가 남아 있어 구별합니다. 다른 사람이 연 에디터는 닫지 않고 멈춥니다. 기준 클론이 열려 있으면 새 클론에 Library를 복사할 수 없으니 닫으라고 하고 멈춥니다.
+- **시간.** 큰 프로젝트는 clone과 첫 임포트에 수십 분이 걸립니다. 사람의 터미널에서 돌리거나, 끊기면 다시 돌리세요.
+- 에이전트 슬롯은 용도 `agent`로 등록되므로, Claude Code·Codex·Cursor 어느 쪽이든 `acquire agent`로 잡습니다.
+
 ## MCP 서버
 
 [mcp/unity-slot-mcp.ps1](mcp/unity-slot-mcp.ps1)은 코딩 에이전트용 stdio MCP 서버입니다(JSON-RPC, 한 줄에 메시지 하나). Windows PowerShell 5.1 말고는 필요한 것이 없습니다. 도구 호출마다 `unity-slot.ps1`을 자식 프로세스로 돌려 그 출력을 돌려주므로 로직은 한 곳에 있습니다. 클라이언트가 세션마다 서버를 띄우고, stdin이 닫히면 끝납니다.
@@ -226,14 +245,14 @@ flowchart TD
 | `status` | 짧은 요약(`summary`와 같음: 에디터·커밋 한 줄, 표 하나, 경고)을 돌려줍니다. `slot`·`project`로 좁힐 수 있습니다. `format=json`이면 등록부 JSON을, `processes=true`면 에디터 프로세스와 메모리를, `dashboard=true`(`git=basic\|full`)면 [대시보드 문서](#대시보드-json)를 돌려줍니다. |
 | `acquire` | 용도로 빈 슬롯을 임대하고 에디터를 띄운 뒤 기다리지 않고 돌아옵니다. |
 | `open` | 슬롯의 에디터를 띄우고 바로 돌아옵니다. |
-| `wait_ready` | 호출마다 최대 55초 기다립니다. READY, STARTING(다시 부름, 마지막 단계와 임포트 워커 수), STALLED, NOT RUNNING. |
+| `wait_ready` | 호출마다 최대 55초 기다립니다. READY, STARTING(다시 부름, 마지막 단계와 임포트 워커 수), STALLED, NOT RUNNING. 새 클론이나 이름을 바꾼 클론의 첫 READY는 afterFirstOpen 훅을 돌리고(클론에 에이전트 파일을 쓸 수 있음), 성공하면 훅마다 한 줄만 보입니다. |
 | `close` | X 버튼처럼 닫습니다. `discard_unsaved=true`면 공식 Unity CLI(`unity close`, 저장 안 함, `com.unity.pipeline`이 있는 프로젝트만)를 쓰므로, 사람이 변경을 버리라고 했을 때만 쓰세요. |
 | `release` | 임대한 슬롯을 놓습니다. MCP 서버가 다시 뜬 뒤에는 acquire 결과에 나온 주인을 `owner`로 넘깁니다. |
 | `create` | 새 클론을 계획합니다(`new-clone -NoOpen`, 그래서 계획의 첫 열기는 open + wait_ready로 나옵니다). 사람이 계획에 동의한 뒤 `confirm=true`로 만듭니다(`-Apply`). 이름은 늘 제네릭한 `<repo>-<번호>`입니다(이름 인자 없음). |
 
 도구 호출은 짧게 끝납니다. open·acquire는 띄우자마자 돌아오고 wait_ready를 READY까지 부르므로, Unity가 시작하는 동안 클라이언트의 도구 시간 제한에 걸리지 않습니다.
 
-임대 주인은 Claude Code에서는 `claude:<세션>`입니다. Claude Code는 MCP 서버에 세션 ID를 넘겨 주므로 서버가 다시 떠도 주인이 같습니다. Codex는 정해진 환경변수만 넘기고 Cursor는 대화·세션 ID를 넘기지 않아(2026-11 확인), 그 밖의 클라이언트는 `<클라이언트 이름>:<무작위>`이고 서버가 다시 뜨면 새 ID가 됩니다. 그래서 MCP로 잡은 임대에는 클라이언트 프로세스(이름·pid·시작 시각)를 남기고, `status`와 거부된 `release`가 안내를 붙입니다.
+임대 주인은 Claude Code에서는 `claude:<세션>`입니다(MCP 밖에서 CLI를 부를 때도 같습니다. Codex 셸에서 부른 CLI는 `codex:<스레드 끝 8자>`입니다). Claude Code는 MCP 서버에 세션 ID를 넘겨 주므로 서버가 다시 떠도 주인이 같습니다. Codex는 정해진 환경변수만 넘기고 Cursor는 대화·세션 ID를 넘기지 않아(2026-11 확인), 그 밖의 클라이언트는 `<클라이언트 이름>:<무작위>`이고 서버가 다시 뜨면 새 ID가 됩니다. 그래서 MCP로 잡은 임대에는 클라이언트 프로세스(이름·pid·시작 시각)를 남기고, `status`와 거부된 `release`가 안내를 붙입니다.
 
 - 같은 클라이언트 이름의 다른 ID가 가진 임대: 이 대화가 서버 재시작 전에 잡았다면(그때 acquire 결과에 그 주인이 나왔다면) `release(slot="X", owner="<그 주인>")`, 아니면 다른 대화의 것이니 그대로 둡니다.
 - 잡은 클라이언트 프로세스가 끝난 임대: 주인 없는 임대(`lease-client-gone`)라서 사용자에게 넘깁니다. 사람은 CLI `release <슬롯> -AnyOwner`로 풉니다.
@@ -294,7 +313,7 @@ tool_timeout_sec = 300
   "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "C:\\path\\to\\unity-slot\\mcp\\unity-slot-mcp.ps1"] } } }
 ```
 
-도구에는 MCP annotations가 붙어 있습니다(프로토콜 2025-03-26부터, 2024-11-05 클라이언트에는 빼고 줍니다). `status`·`wait_ready`는 읽기 전용, `acquire`·`open`·`create`는 바꾸지만 파괴적이지 않음(`create`는 `git clone`으로 네트워크를 씀), `close`·`release`는 에디터를 닫고 `close`는 `discard_unsaved`로 미저장 변경을 버릴 수 있어 파괴적으로 표시합니다. 힌트는 권한을 주지 않습니다. 클라이언트가 여전히 호출마다 물을 수 있고, 비대화형 실행(예: `codex exec`)에서는 클라이언트 승인 설정에서 이 서버의 도구를 허용해야 할 수 있습니다.
+도구에는 MCP annotations가 붙어 있습니다(프로토콜 2025-03-26부터, 2024-11-05 클라이언트에는 빼고 줍니다). `status`는 읽기 전용, `wait_ready`(첫 READY의 afterFirstOpen 훅이 파일을 쓸 수 있음)·`acquire`·`open`·`create`는 바꾸지만 파괴적이지 않음(`create`는 `git clone`으로 네트워크를 씀), `close`·`release`는 에디터를 닫고 `close`는 `discard_unsaved`로 미저장 변경을 버릴 수 있어 파괴적으로 표시합니다. 힌트는 권한을 주지 않습니다. 클라이언트가 여전히 호출마다 물을 수 있고, 비대화형 실행(예: `codex exec`)에서는 클라이언트 승인 설정에서 이 서버의 도구를 허용해야 할 수 있습니다.
 
 에이전트 규칙은 이 정도로 짧아도 됩니다: 「먼저 Unity 에디터가 필요한 일인지 정하세요. 확실하지 않으면 열지 마세요. 필요하면 pull·브랜치 전환은 닫혀 있을 때 끝내고, 계획·조사보다 먼저 슬롯을 acquire(용도, 프로젝트)하세요. 에디터가 뜨는 동안(12초~수 분) 코드 읽기·조사·계획을 하고, Unity 에셋·스크립트 수정은 READY 뒤에 하세요. 에디터가 필요해지면 READY까지 wait_ready를 부르고, `pin` 줄의 `set_active_instance`로 Unity MCP를 그 에디터에 고정하고, `Application.dataPath`가 그 슬롯인지 확인한 뒤 일하고, 끝나면 release하세요. 슬롯 여러 개는 커밋이 높음 기준 아래일 때(`warn capacity` 줄이 없을 때)만 함께 잡고, 아니면 하나씩 잡으세요. 플랫폼을 바꾸지 말고, 남이 임대한 슬롯을 잡지 말고, 멈추면 사용자에게 넘기세요.」
 
@@ -351,7 +370,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1 -List
 
 - **스텁.** `tests\stub\UnityStub.cs`를 Windows에 들어 있는 .NET Framework 컴파일러(`csc.exe`)로 빌드합니다. `-projectPath`·`-logFile`·`-standbyWorkerCount`·`-buildTarget`을 읽고, Unity와 같은 꼴의 창 제목, `Temp\UnityLockfile`, Editor.log의 `##utp` `ProjectInfo` 줄, X(CloseMainWindow)로 닫기, 네이티브 버튼이 있는 대화상자, 씬 비컨, 임포트 워커(`-parentPid`)를 흉내 냅니다. 동작은 클론의 `Temp\unity-stub.txt`(제어 파일)로 정합니다: `normal`, `never-ready`, `dialog`, `slow-close`, `ignore-close`, `dirty`, `exit-early`. WMI로 뜬 프로세스는 호출한 셸의 환경변수를 받지 않으므로 환경변수로는 정하지 않습니다.
 - **격리.** 시험 폴더(기본 `%TEMP%\unity-slot-tests\<시각>`)에 스텁, 로컬 bare origin, 가짜 클론(`MyGame`, `MyGame-1`, `MyGame-2`, `MyGame-Web`)을 만들고, 그룹마다 `UNITY_SLOT_HOME`·`UNITY_SLOT_CONFIG`를 따로 줍니다. 가짜 클론의 Unity 버전은 `9999.0.0f1`이라 실제 에디터가 열릴 일이 없습니다. 실행 전후로 실제 `slots.json`·`install.json`의 수정 시각과 해시가 같은지 확인합니다.
-- **그룹.** `lease`(임대·경쟁·만료 임대 넘겨받기·빈 슬롯·상시 슬롯), `close`(닫기 거부·시간 초과·batchmode·잠금), `start`(STARTING·STALLED·대화상자 목록·`-TimeoutSec`·버전·플랫폼), `report`(`events.jsonl`·`install.json` 포인터·대시보드·비밀값), `mcp`(프로토콜·임대 흐름), `phase2`(MCP 안내 문구·시간·annotations·status 요약·수용량 경고·시작 단계, 아직 코어에 없는 개선은 SKIP). 그룹은 따로 프로세스에서 3개씩 함께 돌고, 그룹 안의 시험은 차례로 돕니다.
+- **그룹.** `lease`(임대·경쟁·만료 임대 넘겨받기·빈 슬롯·상시 슬롯), `close`(닫기 거부·시간 초과·batchmode·잠금), `start`(STARTING·STALLED·대화상자 목록·`-TimeoutSec`·버전·플랫폼), `report`(`events.jsonl`·`install.json` 포인터·대시보드·비밀값), `mcp`(프로토콜·임대 흐름), `phase2`(MCP 안내 문구·시간·annotations·status 요약·수용량 경고·시작 단계, 아직 코어에 없는 개선은 SKIP), `prepare`(origin에서 기준 클론·첫 열기·에이전트 클론 2개, 다시 돌리기, 끊긴 실행 이어 가기, 남이 연 에디터·플랫폼 전환 거부). 그룹은 따로 프로세스에서 3개씩 함께 돌고, 그룹 안의 시험은 차례로 돕니다.
 - **결과.** 시험마다 PASS·FAIL·KNOWN·SKIP과 시간을 찍고, FAIL이 없으면 exit 0입니다. KNOWN은 [tests/FINDINGS.md](tests/FINDINGS.md)에 적은 코어 문제의 재현 시험입니다. 모두 통과하면 시험 폴더를 지우고, 아니면 남깁니다(`envs\<그룹>\cli.log`에 모든 실행의 출력이 있습니다).
 - **지키는 것.** 스텁도 죽이지 않습니다. 시험은 제어 파일로 스텁이 스스로 끝나게 하고, 끝나지 않은 스텁은 보고만 합니다(10분 뒤 스스로 끝납니다). 대화상자는 누르지 않고 목록만 봅니다. 스텁 창은 화면 밖에 포커스를 뺏지 않고 뜨며, 소리를 내지 않습니다.
 - **앱 패키지 셸.** MSIX로 설치한 앱의 셸은 AppData 쓰기가 앱 전용 폴더로 가서, WMI로 뜬 스텁이 그 파일을 보지 못합니다. 그런 셸에서 시험 폴더가 AppData 아래면 시작하지 않으니 `-Root`로 다른 폴더를 주세요.

@@ -1,9 +1,9 @@
-# Phase 2: the improvements of the plan: A1-A4 (0.5.0), B1 (0.5.1), B2 (0.5.4), B6 and B7 (0.5.6). The wording of MCP
+# Phase 2: the improvements of the plan: A1-A4 (0.5.0), B1 (0.5.1), B2 (0.5.4), B6 and B7 (0.5.6), B9-B11 (0.6.1). The wording of MCP
 # texts keeps changing, so these tests check key words (tool calls, "warn capacity", annotation keys,
 # phase names), not whole sentences. The CLI wording that A1 must not change is checked by the phase 1
 # tests, which compare the CLI lines word for word. Dot-sourced by tests\run-tests.ps1. ASCII-only source.
 
-Register-Group 'phase2' -Clones @('MyGame', 'MyGame-1', 'MyGame-2', 'MyGame-Web')
+Register-Group 'phase2' -Clones @('MyGame', 'MyGame-1', 'MyGame-2', 'MyGame-Web') -Stray @('Stray')
 
 # Under MCP a next step names the tool to call, never a "unity-slot <command>" line or a CLI flag.
 function Assert-NoCliWording($R) {
@@ -76,7 +76,7 @@ Add-Test -Name 'phase2.a2-mcp-call-seconds' -Group 'phase2' -Phase 2 -Body {
 Add-Test -Name 'phase2.a3-tool-annotations' -Group 'phase2' -Phase 2 -Body {
     param($E)
     $want = @{
-        status = 'True,,,False'; wait_ready = 'True,,,False'; acquire = 'False,False,False,False'; open = 'False,False,True,False'
+        status = 'True,,,False'; wait_ready = 'False,False,True,False'; acquire = 'False,False,False,False'; open = 'False,False,True,False'
         close = 'False,True,True,False'; release = 'False,True,True,False'; create = 'False,False,False,True'
     }
     $S = Start-McpServer $E
@@ -110,7 +110,8 @@ Add-Test -Name 'phase2.a4-status-summary' -Group 'phase2' -Phase 2 -Body {
         Assert-Equal $st.Code 0 'status'
         $lines = @(($st.Text -split "`r?`n") | Select-Object -Skip 1 | Where-Object { $_.Trim() })
         Assert-True ($lines.Count -le 30) ('status lines: ' + $lines.Count)
-        Assert-Like $lines[0] '^unity-slot  editors \d+/6 \| commit \d+% \([0-9.]+/[0-9.]+GB\)$' 'summary first line'
+        # other groups' stubs run at the same time and count as editors outside this registry (B10)
+        Assert-Like $lines[0] '^unity-slot  editors \d+/6( \(\d+ outside the registry\))? \| commit \d+% \([0-9.]+/[0-9.]+GB\)$' 'summary first line'
         Assert-Like $st '^slot\s+platform\s+mode\s+state\s+lease\s+agents$' 'summary header'
         Assert-Like $st '^MyGame\s+Android\s+ondemand\s+closed\s+-\s+no$' 'MyGame row'
         Assert-Like $st '^MyGame-1\s+Android\s+ondemand\s+closed\s+-\s+yes$' 'MyGame-1 row'
@@ -282,4 +283,66 @@ Add-Test -Name 'phase2.b7-log-tail' -Group 'phase2' -Phase 2 -Body {
     Assert-Has $nr '[wait]   last line'
     $longest = (@($nr.Out -split "`r?`n") | Measure-Object -Property Length -Maximum).Maximum
     Assert-True ($longest -le 320) ('longest output line {0} characters' -f $longest)
+}
+
+# B9 (0.6.1): the pending afterFirstOpen hooks of a READY print one line when they succeed, and
+# wait_ready is no longer read-only (those hooks may write into the clone; see phase2.a3).
+Add-Test -Name 'phase2.b9-pending-hooks-brief' -Group 'phase2' -Phase 2 -Body {
+    param($E)
+    $c = $E.Clones['MyGame-2']
+    [void](Stop-Stubs @($c))
+    $hook = Join-Path $E.Dir 'five-lines.ps1'
+    Write-TextFile $hook "1..5 | ForEach-Object { 'line ' + `$_ }`n"
+    Write-EnvConfig $E $null @{ hooks = [ordered]@{ afterFirstOpen = @([ordered]@{ name = 'five'; run = @($hook) }) } }
+    try {
+        $regFile = Join-Path $E.Home 'slots.json'
+        $reg = [IO.File]::ReadAllText($regFile, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        foreach ($s in @($reg.slots)) { if ($s.name -eq 'MyGame-2') { $s | Add-Member -NotePropertyName pendingHooks -NotePropertyValue @('afterFirstOpen') -Force } }
+        Write-TextFile $regFile ($reg | ConvertTo-Json -Depth 10)
+        Set-StubControl $c @{ mode = 'normal'; readyMs = '500' } -Reset
+        $o = Invoke-SlotCli $E @('open', 'MyGame-2')
+        Assert-Exit $o 0
+        Assert-Has $o '[open] hook    afterFirstOpen/five: exit 0 (5 output line(s), last: line 5)'
+        Assert-HasNot $o 'line 1' 'READY output (a successful pending hook shows one line)'
+        Assert-NotLike $o 'five-lines\.ps1' 'READY output (no hook command line when it succeeds)'
+        Assert-Exit (Invoke-SlotCli $E @('close', 'MyGame-2')) 0
+    } finally {
+        Write-EnvConfig $E $null $null
+    }
+}
+
+# B10 (0.6.1): the summary's editor count names the editors of no registered slot.
+Add-Test -Name 'phase2.b10-editors-outside-registry' -Group 'phase2' -Phase 2 -Body {
+    param($E)
+    $s = $E.Stray['Stray']
+    [void](Start-StubDirect $s @())
+    try {
+        Wait-Until { (Get-LockStateH $s) -eq 'held' } 15 'the stray stub'
+        $o = Invoke-SlotCli $E @('summary')
+        Assert-Exit $o 0
+        # at least this stray stub; stubs of the groups running in parallel are outside this registry too
+        $n = [int](Get-Match $o.Out '^unity-slot  editors \d+/6 \((\d+) outside the registry\) \| commit \d+% ')
+        Assert-True ($n -ge 1) ('editors outside the registry: ' + $n)
+    } finally { [void](Stop-Stubs @($s)) }
+}
+
+# B11 (0.6.1): the scene-beacon hook finds a writer script recorded with the full path of the folder
+# the clone had before it was renamed (a [CallerFilePath] value) under this clone's Assets.
+Add-Test -Name 'phase2.b11-beacon-writer-renamed-clone' -Group 'phase2' -Phase 2 -Body {
+    param($E)
+    $clone = Join-Path $E.Dir 'beacon-clone'
+    [void](New-Item -ItemType Directory -Path (Join-Path $clone 'Assets\Editor'), (Join-Path $clone 'Temp') -Force)
+    $writer = Join-Path $clone 'Assets\Editor\Beacon.cs'
+    Write-TextFile $writer "// writer`n"
+    $beacon = [ordered]@{ Pid = 0; ScriptPath = 'C:/old/MyGame-GPT/Assets/Editor/Beacon.cs'; IsPlaying = $false
+        Scenes = @([ordered]@{ Path = 'Assets/Main.unity'; IsDirty = $true }) }
+    Write-TextFile (Join-Path $clone 'Temp\B.json') ($beacon | ConvertTo-Json -Depth 5)
+    $hookPath = Join-Path $script:RepoRoot 'examples\hooks\scene-beacon.ps1'
+    $out = (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hookPath -Clone $clone -EditorPid 0 -Beacon 'Temp\B.json' 2>&1 | Out-String)
+    Assert-Equal $LASTEXITCODE 4 'hook exit (the writer is found in this clone, so the dirty scene refuses)'
+    Assert-True ($out -match 'unsaved: Assets/Main\.unity') ('hook output: ' + $out.Trim())
+    Remove-Item -LiteralPath $writer -Force
+    $out2 = (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hookPath -Clone $clone -EditorPid 0 -Beacon 'Temp\B.json' 2>&1 | Out-String)
+    Assert-Equal $LASTEXITCODE 0 'hook exit (no writer anywhere)'
+    Assert-True ($out2 -match 'beacon writer script is gone') ('hook output: ' + $out2.Trim())
 }
