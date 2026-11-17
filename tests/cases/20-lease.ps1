@@ -198,6 +198,70 @@ Add-Test -Name 'lease.expired-lease' -Group 'lease' -Body {
     Assert-Has $rel '[release] RELEASED MyGame-Web'
 }
 
+Add-Test -Name 'lease.release-stale' -Group 'lease' -Body {
+    param($E)
+    $leaseOf = { param($d) @(($d.Out | ConvertFrom-Json).slots | Where-Object { $_.name -eq 'MyGame-Web' })[0].lease }
+    # a current lease of a closed slot is not stale: refused, kept
+    Assert-Exit (Invoke-SlotCli $E @('acquire', 'webgl', '-Project', 'mygame', '-Owner', 'cur', '-NoOpen')) 0
+    $d = Invoke-SlotCli $E @('dashboard', '-Json')
+    Assert-Exit $d 0
+    Assert-True ((& $leaseOf $d).stale -eq $false) 'dashboard lease.stale of a current lease'
+    $x = Invoke-SlotCli $E @('release', 'MyGame-Web', '-Stale')
+    Assert-Exit $x 4
+    Assert-Like $x '^\[release\] REFUSED: not a stale lease: the lease is current until .+ and its holder still runs\. Nothing was changed\.'
+    Assert-Equal (Get-Lease $E 'MyGame-Web').owner 'cur' 'current lease kept'
+    $other = Invoke-SlotCli $E @('release', 'MyGame-Web', '-Owner', 'someone')
+    Assert-Exit $other 4
+    Assert-HasNot $other 'is stale' 'no stale note for a current lease'
+    Assert-Exit (Invoke-SlotCli $E @('release', 'MyGame-Web', '-Owner', 'cur')) 0
+
+    # an expired lease of a closed slot: released by the sweep (no slot named), whoever holds it
+    $n0 = Get-EventCount $E
+    Assert-Exit (Invoke-SlotCli $E @('acquire', 'webgl', '-Project', 'mygame', '-Owner', 'old', '-NoOpen', '-Hours', '0.0003')) 0
+    Start-Sleep -Milliseconds 1300
+    $d = Invoke-SlotCli $E @('dashboard', '-Json')
+    Assert-True ((& $leaseOf $d).stale -eq $true) 'dashboard lease.stale of an expired lease'
+    $note = Invoke-SlotCli $E @('release', 'MyGame-Web', '-Owner', 'someone')
+    Assert-Has $note '[release] note    it is stale (editor closed, expired): unity-slot release MyGame-Web -Stale drops only such a lease'
+    $s = Invoke-SlotCli $E @('release', '-Stale')
+    Assert-Exit $s 0
+    Assert-Has $s '[release] RELEASED MyGame-Web'
+    Assert-True ($null -eq (Get-Lease $E 'MyGame-Web')) 'expired lease gone'
+    $rel = @(Get-NewEvents $E $n0 | Where-Object { $_.event -eq 'release' })
+    Assert-Equal $rel.Count 1 'release events'
+    Assert-Equal $rel[0].detail.stale 'expired' 'release detail.stale'
+    Assert-Equal $rel[0].detail.leaseOwner 'old' 'release detail.leaseOwner'
+    $none = Invoke-SlotCli $E @('release', '-Stale')
+    Assert-Exit $none 0
+    Assert-Has $none '[release] NO STALE LEASE: every lease is current or its editor is open.'
+
+    # a current lease whose client process has exited (an orphaned MCP lease): stale
+    Assert-Exit (Invoke-SlotCli $E @('acquire', 'webgl', '-Project', 'mygame', '-Owner', 'gone', '-NoOpen')) 0
+    $file = Get-LeaseFile $E 'MyGame-Web'
+    $j = [IO.File]::ReadAllText($file) | ConvertFrom-Json
+    $j.client = [pscustomobject]@{ name = 'client.exe'; pid = 999999; startedAt = (Get-Date).ToString('o') }
+    [IO.File]::WriteAllText($file, ($j | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+    $g = Invoke-SlotCli $E @('release', 'MyGame-Web', '-Stale')
+    Assert-Exit $g 0
+    Assert-Has $g '[release] RELEASED MyGame-Web'
+    Assert-Like $g '^\[release\] slot    MyGame-Web: closed; lease gone until .+ \(client-gone\)'
+
+    # an expired lease of an open slot is not stale: the editor is left alone
+    Set-StubControl $E.Clones['MyGame-Web'] @{ mode = 'normal'; readyMs = '500' } -Reset
+    $o = Invoke-SlotCli $E @('acquire', 'webgl', '-Project', 'mygame', '-Owner', 'open1', '-NoWait', '-Hours', '0.0003')
+    Assert-Exit $o 0
+    $pid1 = [int](Get-Match $o.Out 'STARTED pid (\d+);')
+    Assert-Exit (Invoke-SlotCli $E @('wait', 'MyGame-Web', '-TimeoutSec', '20')) 0
+    $y = Invoke-SlotCli $E @('release', 'MyGame-Web', '-Stale')
+    Assert-Exit $y 4
+    Assert-Like $y ('^\[release\] REFUSED: not a stale lease: the editor is open \(pid {0}\)' -f $pid1)
+    Assert-Equal (Get-Lease $E 'MyGame-Web').owner 'open1' 'lease of the open slot kept'
+    Assert-True (Test-ProcAlive $pid1) 'editor untouched by release -Stale'
+    $sweep = Invoke-SlotCli $E @('release', '-Stale')
+    Assert-Has $sweep '[release] NO STALE LEASE: every lease is current or its editor is open.'
+    Assert-Exit (Invoke-SlotCli $E @('release', 'MyGame-Web', '-Owner', 'open1')) 0
+}
+
 Add-Test -Name 'lease.no-free-slot' -Group 'lease' -Body {
     param($E)
     $n = Invoke-SlotCli $E @('acquire', 'nosuch', '-Project', 'mygame', '-Owner', 'x', '-NoOpen')

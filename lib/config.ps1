@@ -29,7 +29,7 @@ $script:HookEventHelp = [ordered]@{
     afterClone     = 'new-clone made and registered a clone (before its first open)'
     afterFirstOpen = 'a new clone''s editor is READY for the first time (new-clone, open or wait)'
 }
-$script:BuiltinCommands = @('open', 'wait', 'close', 'status', 'slots', 'summary', 'scan', 'set', 'acquire', 'release', 'renew', 'new-clone', 'prepare', 'hooks', 'dashboard')
+$script:BuiltinCommands = @('open', 'wait', 'close', 'status', 'slots', 'summary', 'scan', 'set', 'acquire', 'release', 'renew', 'new-clone', 'prepare', 'hooks', 'dashboard', 'branch-view')
 $script:ConfigCache = $null
 $script:ConfigFileUsed = $null
 $script:Utf8NoBom = New-Object Text.UTF8Encoding($false)
@@ -59,6 +59,8 @@ function Get-DefaultConfig {
         dashboard       = [pscustomobject][ordered]@{
             commitHighPercent = 85; commitCriticalPercent = 90; leaseExpiringMinutes = 30; localOnlyOldDays = 14; recentEvents = 20
         }
+        # branch-view: where the view repositories go, and the fewest slots a project needs for a new one
+        branchView      = [pscustomobject][ordered]@{ root = '{state}\view'; minSlots = 2 }
         hooks           = [pscustomobject]@{}
         commands        = [pscustomobject]@{}
     }

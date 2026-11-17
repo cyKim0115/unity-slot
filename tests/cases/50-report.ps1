@@ -104,13 +104,16 @@ Add-Test -Name 'report.dashboard-and-secrets' -Group 'report' -Body {
     $doc = $d.Out | ConvertFrom-Json
     Assert-Equal $doc.schema 'unity-slot.dashboard/1' 'schema'
     Assert-Equal $doc.version (Get-CoreVersion) 'version'
-    Assert-Equal (@($doc.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') 'schema,version,time,host,registry,system,slots,unregisteredEditors,orphanWorkers,recentEvents,systemFlags,timing' 'top-level fields'
+    Assert-Equal (@($doc.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') 'schema,version,time,host,registry,system,slots,unregisteredEditors,orphanWorkers,recentEvents,systemFlags,timing,repos,branchViews' 'top-level fields'
+    # 0.7.0: branch-view state files; none in this environment (its view root does not exist)
+    Assert-True ($null -ne $doc.branchViews -and @($doc.branchViews).Count -eq 0) ('branchViews: ' + ($doc.branchViews | ConvertTo-Json -Compress))
     Assert-True (Test-UnderPath $doc.registry.path $E.Home) ('registry.path ' + $doc.registry.path)
     Assert-True ([int]$doc.system.editorsOpen -ge 4) ('system.editorsOpen ' + $doc.system.editorsOpen)
     Assert-True ([double]$doc.timing.totalMs -gt 0) 'timing.totalMs'
     $by = @{}
     foreach ($item in @($doc.slots)) { $by[$item.name] = $item }
     Assert-Equal @($doc.slots).Count 4 'slots'
+    Assert-Equal @($doc.repos).Count 4 'repos (one per clone)'
     $slotFields = 'name,path,project,repo,kind,unity,platform,purposes,mode,agentUse,memo,exists,editor,lease,git,lastOpenedAt,lastClosedAt,flags'
     $editorFields = 'state,pid,startedAt,readyAt,readySeconds,launch,standby,lock,unsavedScene,memory'
     foreach ($item in @($doc.slots)) {
@@ -118,6 +121,11 @@ Add-Test -Name 'report.dashboard-and-secrets' -Group 'report' -Body {
         Assert-Equal (@($item.editor.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') $editorFields ($item.name + ' editor fields')
         Assert-Equal $item.git.branch 'master' ($item.name + ' git.branch')
         Assert-Equal $item.git.changes 0 ($item.name + ' git.changes')
+        # 0.7.0: head, detached, changes by kind and the folder's own git directory, also with basic
+        Assert-Like ([string]$item.git.head) '^[0-9a-f]{40}$' ($item.name + ' git.head')
+        Assert-True ($item.git.detached -eq $false) ($item.name + ' git.detached')
+        Assert-Equal (@($item.git.changesDetail.PSObject.Properties | ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }) -join ',') 'staged=0,unstaged=0,untracked=0,conflicted=0' ($item.name + ' git.changesDetail')
+        Assert-True (Test-SamePathH $item.git.gitDir (Join-Path $item.path '.git')) ($item.name + ' git.gitDir ' + $item.git.gitDir)
     }
     Assert-Equal $by['MyGame'].editor.state 'closed' 'MyGame state'
     Assert-Equal @($by['MyGame'].flags).Count 0 'MyGame flags'

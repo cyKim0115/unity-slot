@@ -13,6 +13,7 @@ Open and close Unity editors for clone folders on demand, and show what is open.
   unity-slot.ps1 set       <slot> [-Purpose a,b] [-Mode hot|ondemand] [-AgentUse true|false] [-Memo <text>]
   unity-slot.ps1 acquire   <purpose|platform> [-Project <repo>] [-Owner <id>] [-Hours 8] [-NoOpen | -NoWait]
   unity-slot.ps1 release   <slot> [-Owner <id>] [-KeepOpen] [-AnyOwner]
+  unity-slot.ps1 release   [<slot>] -Stale
   unity-slot.ps1 renew     <slot> [-Owner <id>] [-Hours 8]
   unity-slot.ps1 new-clone <purpose|platform> [-Project <repo>] [-From <slot>] [-Name <repo>-<n>]
                            [-CloneRoot <dir>] [-NoOpen] [-Apply]
@@ -20,6 +21,7 @@ Open and close Unity editors for clone folders on demand, and show what is open.
                            [-CloneRoot <dir>] [-NoOpen] [-Apply]
   unity-slot.ps1 hooks     [<slot|clone> -HookEvent <event>]
   unity-slot.ps1 dashboard -Json [-Git basic|full]
+  unity-slot.ps1 branch-view [-Project <repo>[,...]] [-Apply] [-Json]
   unity-slot.ps1 <extra command from the config> ...
   Any command: [-NoHooks] [-SkipHook <name>[,...]]
 
@@ -41,6 +43,9 @@ scan      Detects version, branch, platform of clones under the scan roots and u
 set       Changes the user fields of a slot (purposes, mode, agent use, memo).
 acquire   Leases a free slot that fits, then opens its editor (lib\lease.ps1). Exit 5: none free.
 release   Closes the editor of an on-demand slot and drops the lease. Only the lease owner.
+          -Stale drops a stale lease of any owner and never touches an editor: the slot is closed
+          and the lease expired or its client process has exited. Without a slot, every stale lease.
+          Exit 4 when the named slot's lease is not stale. A person's command, like -AnyOwner.
 renew     Extends a lease.
 new-clone Plans (dry run) or, with -Apply, makes a new clone slot (lib\newclone.ps1).
 prepare   Gets a project ready on a PC (lib\prepare.ps1): a base clone (git clone of the origin URL, or
@@ -50,11 +55,25 @@ prepare   Gets a project ready on a PC (lib\prepare.ps1): a base clone (git clon
 hooks     Shows the config file, the hooks per event and the extra commands; with a slot and
           -HookEvent it runs that event's hooks for the slot now (lib\config.ps1).
 dashboard One read-only JSON document for widgets and agents (schema unity-slot.dashboard/1):
-          slots with editor state, memory, lease and git, plus system, events and flags. Only the
-          JSON goes to stdout; -Git full adds branch-level git numbers (lib\dashboard.ps1).
+          slots with editor state, memory, lease and git, plus system, events and flags, and repos
+          (one per git directory: its working folders, branch and head). Only the JSON goes to
+          stdout. -Git full adds branch-level git numbers and, per repository, the local branches
+          (upstream, ahead/behind, against the default branch, commits on no origin), stashes and
+          flags (lib\dashboard.ps1), and branchViews (the branch-view state files). Never fetches.
+branch-view
+          One view repository per project, the folder <root>\<repo> with only its .git (branchView.root,
+          default <slot home>\view; open that folder in Fork), whose remotes are the project's slots, so
+          a git client shows every slot's local branches (lib\branchview.ps1). An older bare
+          <root>\<repo>.git is moved into the folder with -Apply.
+          Dry run unless -Apply. Slots are only read: their remotes point at unity-slot-view://<slot>,
+          which only this command maps to the slot folder (git -c url.<folder>.insteadOf=...), so other
+          git clients cannot fetch from a slot. Fetches only slots whose refs changed, skips busy ones
+          (gc or repack running), fills origin/* fast-forward only from the slot with the newest
+          FETCH_HEAD. Not a backup: branches a slot deleted go. -Json: one document on stdout
+          (schema unity-slot.branch-view/1), everything else on stderr. Exit 4: another run holds the lock.
 
 Every run refreshes <slot home>\install.json (where this script is, its version) and open, ready,
-close, acquire, release, renew, takeover and refusals go to <slot home>\events.jsonl.
+close, acquire, release, renew, takeover, refusals and branchview go to <slot home>\events.jsonl.
 
 Settings (editor roots, scan roots, clone root, purposes, timeouts), hooks and extra commands come
 from config.json next to this script or in %USERPROFILE%\.unity-slot (config.example.json).
@@ -68,7 +87,8 @@ Rules kept here (README.md has the reasons):
 
 Exit codes: 0 ok, 1 error, 2 timed out (editor left running), 3 editor version not installed,
             4 refused (lock held, a beforeClose hook, batchmode run, lease of someone else,
-              platform switch, new-clone check failed), 5 no free slot, 6 still starting (wait).
+              platform switch, new-clone check failed, another branch-view run), 5 no free slot,
+            6 still starting (wait).
 #>
 [CmdletBinding()]
 param(
@@ -114,6 +134,8 @@ param(
     [switch]$NoWait,
     [switch]$KeepOpen,
     [switch]$AnyOwner,
+    # release: only stale leases (slot closed; lease expired or its client gone), any owner
+    [switch]$Stale,
     [string[]]$Purpose,
     [ValidateSet('hot', 'ondemand')]
     [string]$Mode,
@@ -137,16 +159,17 @@ param(
     # hooks: the event to run now for one slot
     [string]$HookEvent,
 
-    # dashboard: basic = each slot's git status; full = also local-only commits, branches, stash, worktrees
+    # dashboard: basic = each slot's git status and repos[] folders; full = also local-only commits, branches, stash,
+    # worktrees, and per repository the branches, stashes and commits on no origin
     [Alias('Git')]
     [ValidateSet('basic', 'full')]
     [string]$GitLevel = 'basic',
 
-    # scan, new-clone (and some extra commands): without it they only show what they would do
+    # scan, new-clone, prepare, branch-view (and some extra commands): without it they only show what they would do
     [switch]$Apply
 )
 
-$script:UnitySlotVersion = '0.6.1'
+$script:UnitySlotVersion = '0.7.0'
 $script:ExitCode = 0
 $script:LastOpenPid = 0
 $script:LastStartupPhase = $null
@@ -159,7 +182,7 @@ $script:Inv = [Globalization.CultureInfo]::InvariantCulture
 $script:SecretFlags = 'accessToken|hubSessionId|cbmEditorLicense|cbmMachineId'
 
 $script:SlotRepo = $PSScriptRoot
-foreach ($lib in @('config', 'registry', 'lease', 'newclone', 'prepare', 'dashboard', 'summary')) { . (Join-Path $PSScriptRoot ('lib\' + $lib + '.ps1')) }
+foreach ($lib in @('config', 'registry', 'lease', 'newclone', 'prepare', 'dashboard', 'summary', 'branchview')) { . (Join-Path $PSScriptRoot ('lib\' + $lib + '.ps1')) }
 
 # ------------------------------------------------------------------ output and masking
 
@@ -1307,6 +1330,7 @@ try {
         'new-clone' { Invoke-NewClone }
         'prepare' { Invoke-Prepare }
         'hooks' { Invoke-Hooks }
+        'branch-view' { Invoke-BranchView }
         default {
             # an extra command from the config: dot-source its file here (script scope), then call it
             $extra = Get-ExtraCommand $Command
@@ -1318,8 +1342,8 @@ try {
         }
     }
 } catch {
-    # dashboard keeps stdout for its JSON only
-    if ($Command -eq 'dashboard') { [Console]::Error.WriteLine('ERROR: ' + (Protect-Text $_.Exception.Message)) }
+    # dashboard (and branch-view -Json) keep stdout for their JSON only
+    if ($Command -eq 'dashboard' -or ($Command -eq 'branch-view' -and $Json)) { [Console]::Error.WriteLine('ERROR: ' + (Protect-Text $_.Exception.Message)) }
     else { Say ('ERROR: ' + (Protect-Text $_.Exception.Message)) }
     $script:ExitCode = 1
 } finally {

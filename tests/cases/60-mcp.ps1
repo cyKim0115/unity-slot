@@ -66,6 +66,10 @@ Add-Test -Name 'mcp.lease-flow' -Group 'mcp' -Body {
         $json = (($st.Text -split "`n", 2)[1]) | ConvertFrom-Json
         Assert-Equal @($json.slots).Count 2 'status format=json slots'
         Assert-True (Test-UnderPath $json.registry $E.Home) ('status registry ' + $json.registry)
+        $dash = Invoke-McpTool $S 'status' @{ dashboard = $true; git = 'full' }
+        Assert-Equal $dash.Code 0 'status dashboard exit'
+        $dj = (($dash.Text -split "`n", 2)[1]) | ConvertFrom-Json
+        Assert-Equal ('{0}/{1}' -f @($dj.repos).Count, (@($dj.repos | ForEach-Object { $_.level }) -join ',')) '2/full,full' 'status dashboard=true git=full repos'
 
         $a = Invoke-McpTool $S 'acquire' @{ purpose = 'webgl'; project = 'mygame' }
         Assert-Equal $a.Code 0 ('acquire exit' + (Format-Excerpt $a))

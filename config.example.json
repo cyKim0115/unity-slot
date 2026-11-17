@@ -42,6 +42,9 @@
   "_dashboard": "Thresholds for the dashboard's flags: commit-high / commit-critical (percent), lease-expiring (minutes), local-only-old (days); recentEvents = events in the document.",
   "dashboard": { "commitHighPercent": 85, "commitCriticalPercent": 90, "leaseExpiringMinutes": 30, "localOnlyOldDays": 14, "recentEvents": 20 },
 
+  "_branchView": "branch-view: root = where the view repositories (the folder <repo> to open in Fork, holding only its .git; an older bare <repo>.git is moved into it by -Apply) and their state files go (keep it outside the scan roots); minSlots = the fewest slots a project needs before branch-view makes a view for it.",
+  "branchView": { "root": "{state}\\view", "minSlots": 2 },
+
   "_hooks": "Programs to run per event (README: Hooks). enabled:false keeps an entry without running it.",
   "hooks": {
     "beforeClose": [
@@ -51,7 +54,13 @@
         "run": ["{repo}\\examples\\hooks\\scene-beacon.ps1", "-Beacon", "Temp\\SceneBeacon.json"]
       }
     ],
-    "afterClose": [],
+    "afterClose": [
+      {
+        "name": "release-cleanup",
+        "enabled": false,
+        "run": ["{repo}\\examples\\hooks\\release-cleanup.ps1", "-Also", "Assets/Plugins/Android/*.xml"]
+      }
+    ],
     "openStalled": [],
     "closeStalled": [],
     "afterClone": [],

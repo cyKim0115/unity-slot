@@ -64,7 +64,7 @@ function Get-LeaseNotes([string]$SlotName, $Lease, $Alive) {
     if ((Test-ViaMcp) -and [string]$Lease.owner -eq [string]$env:UNITY_SLOT_MCP_OWNER) { return }
     if ($Alive -eq $false) {
         if (Test-ViaMcp) { 'note    {0}: the lease of {1} is orphaned: the {2} process that took it has exited. Tell the user; only they can release another session''s lease.' -f $SlotName, $Lease.owner, $Lease.clientName }
-        else { 'note    {0}: the lease of {1} is orphaned: its client process ({2} pid {3}) has exited. -AnyOwner releases it (only when the user says so).' -f $SlotName, $Lease.owner, $Lease.clientName, $Lease.clientPid }
+        else { 'note    {0}: the lease of {1} is orphaned: its client process ({2} pid {3}) has exited. Only the user releases it: unity-slot release {0} -Stale (editor closed) or -AnyOwner.' -f $SlotName, $Lease.owner, $Lease.clientName, $Lease.clientPid }
         return
     }
     if (Test-SameClientOtherId ([string]$Lease.owner)) {
@@ -213,6 +213,99 @@ function Remove-SlotLease([string]$SlotName) {
     if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
 }
 
+# Removes the lease file only while it still holds the lease this process saw ($ExpectedNonce), so a
+# stale release cannot remove a lease that acquire took over a moment ago. The file is opened with
+# only delete sharing, then deleted while open: until the handle closes nobody else can open it.
+function Remove-SlotLeaseIf([string]$SlotName, [string]$ExpectedNonce) {
+    $file = Get-LeaseFile $SlotName
+    $fs = $null
+    for ($try = 0; $try -lt 20 -and $null -eq $fs; $try++) {
+        try { $fs = [IO.File]::Open($file, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Delete) }
+        catch [IO.FileNotFoundException] { return $false }
+        catch [IO.IOException] { Start-Sleep -Milliseconds 50 }
+    }
+    if ($null -eq $fs) { return $false }
+    try {
+        $buf = New-Object byte[] ([int]$fs.Length)
+        $read = 0
+        while ($read -lt $buf.Length) {
+            $n = $fs.Read($buf, $read, $buf.Length - $read)
+            if ($n -le 0) { break }
+            $read += $n
+        }
+        $cur = $null
+        try { $cur = [Text.Encoding]::UTF8.GetString($buf, 0, $read) | ConvertFrom-Json } catch { }
+        if ([string](Get-Prop $cur 'nonce') -ne $ExpectedNonce) { return $false }
+        [IO.File]::Delete($file)
+        return $true
+    } finally {
+        $fs.Dispose()
+    }
+}
+
+# '' when the lease is stale: the slot has no editor or batchmode run, and the lease expired or its
+# client process (Claude Code, Codex, Cursor) has exited. Otherwise why it is not.
+function Get-StaleReason($St, $Snap) {
+    if ($null -eq $St.Lease) { return 'not leased' }
+    if ($St.Batch) { return 'a batchmode run is using the slot' }
+    if ($St.EditorPid -gt 0) { return ('the editor is open (pid {0})' -f $St.EditorPid) }
+    if ($St.Lease.Expired) { return '' }
+    if ((Test-LeaseClientAlive $St.Lease $Snap) -eq $false) { return '' }
+    return ('the lease is current until {0} and its holder still runs' -f (Format-Time $St.Lease.expiresAt))
+}
+
+function Get-StaleKind($St, $Snap) {
+    if ($St.Lease.Expired) { return 'expired' }
+    return 'client-gone'
+}
+
+# release -Stale [<slot>]: drops stale leases of any owner (a person's command, like -AnyOwner) and
+# never touches an editor. Without a slot, every registered slot's stale lease.
+function Invoke-ReleaseStale {
+    $reg = Read-Registry
+    $ownerId = Resolve-Owner
+    $snap = Get-Snapshot
+    $one = -not [string]::IsNullOrWhiteSpace($Target)
+    # foreach copy, not @($reg.slots): @() of a List[object] fails in PowerShell 5.1
+    $targets = New-Object 'System.Collections.Generic.List[object]'
+    if ($one) {
+        $slot = Find-Slot $reg $Target
+        if ($null -eq $slot) { throw ('no registered slot named or located at "{0}". See: unity-slot slots' -f $Target) }
+        $targets.Add($slot)
+    } else {
+        foreach ($s in $reg.slots) { $targets.Add($s) }
+    }
+    $released = 0
+    foreach ($s in $targets) {
+        $st = Get-SlotState $s $snap
+        if ($null -eq $st.Lease) {
+            if ($one) { Say ('slot    {0}: {1}; lease -' -f $s.name, $st.Text); Say 'NOT LEASED: nothing to release.' }
+            continue
+        }
+        $reason = Get-StaleReason $st $snap
+        if ($reason) {
+            if ($one) {
+                Say ('slot    {0}: {1}; lease {2}' -f $s.name, $st.Text, (Format-Lease $st.Lease))
+                Say ('REFUSED: not a stale lease: {0}. Nothing was changed.' -f $reason)
+                Write-SlotEvent 'refused' $s.path $st.EditorPid ([ordered]@{ command = 'release'; reason = ('not stale: ' + $reason); leaseOwner = $st.Lease.owner }) $ownerId
+                $script:ExitCode = 4
+            }
+            continue
+        }
+        $kind = Get-StaleKind $st $snap
+        Say ('slot    {0}: {1}; lease {2} ({3})' -f $s.name, $st.Text, (Format-Lease $st.Lease), $kind)
+        if (-not (Remove-SlotLeaseIf $s.name ([string]$st.Lease.nonce))) {
+            Say ('lease   {0}: changed a moment ago (taken over, renewed or released); left as it is' -f $s.name)
+            if ($one) { $script:ExitCode = 4 }
+            continue
+        }
+        Write-SlotEvent 'release' $s.path 0 ([ordered]@{ closed = $false; keptOpen = $false; anyOwner = $true; stale = $kind; leaseOwner = $st.Lease.owner }) $ownerId
+        Say ('RELEASED {0}' -f $s.name)
+        $released++
+    }
+    if (-not $one -and $released -eq 0) { Say 'NO STALE LEASE: every lease is current or its editor is open.' }
+}
+
 # '' when the slot can be given to $OwnerId, otherwise why not.
 function Get-BusyReason($Slot, $St, [string]$OwnerId) {
     if (-not $St.Exists) { return 'folder missing' }
@@ -355,6 +448,7 @@ function Invoke-Acquire {
 }
 
 function Invoke-Release {
+    if ($Stale) { Invoke-ReleaseStale; return }
     $reg = Read-Registry
     $slot = Find-Slot $reg $Target
     if ($null -eq $slot) {
@@ -371,7 +465,10 @@ function Invoke-Release {
     }
     if ($st.Lease.owner -ne $ownerId -and -not $AnyOwner) {
         if (Test-ViaMcp) { Say ('REFUSED: the lease belongs to {0}, not {1}. Only the user can release someone else''s lease.' -f $st.Lease.owner, $ownerId) }
-        else { Say ('REFUSED: the lease belongs to {0}, not {1}. -AnyOwner releases it anyway (only when the user says so).' -f $st.Lease.owner, $ownerId) }
+        else {
+            Say ('REFUSED: the lease belongs to {0}, not {1}. -AnyOwner releases it anyway (only when the user says so).' -f $st.Lease.owner, $ownerId)
+            if (-not (Get-StaleReason $st $snap)) { Say ('note    it is stale (editor closed, {0}): unity-slot release {1} -Stale drops only such a lease' -f (Get-StaleKind $st $snap), $slot.name) }
+        }
         foreach ($n in @(Get-LeaseNotes $slot.name $st.Lease (Test-LeaseClientAlive $st.Lease $snap))) { Say $n }
         Write-SlotEvent 'refused' $slot.path $st.EditorPid ([ordered]@{ command = 'release'; reason = 'lease of someone else'; leaseOwner = $st.Lease.owner }) $ownerId
         $script:ExitCode = 4

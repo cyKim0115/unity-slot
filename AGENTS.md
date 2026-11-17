@@ -10,6 +10,7 @@ unity-slot registers Unity project clones as slots and opens and closes their ed
 - `lib\prepare.ps1`: prepare (a project ready on a new PC: base clone, first import, agent clones; resumable)
 - `lib\dashboard.ps1`: the dashboard document (schema `unity-slot.dashboard/1`), `events.jsonl`, `install.json`, the one-look readiness check
 - `lib\summary.ps1`: the short status (`summary`, the MCP `status` default), drawn from the dashboard document
+- `lib\branchview.ps1`: `branch-view` (one view repository per project, a plain folder `<root>\<repo>` holding only its `.git`, whose remotes are the slots: placeholder URLs, ref signatures, busy skips, origin fill, the state files) and the dashboard's `branchViews[]`
 - `mcp\unity-slot-mcp.ps1`: stdio MCP server. A thin shell that runs `unity-slot.ps1` per tool call; no logic of its own.
 - `examples\hooks\`: example hooks. `config.example.json`: every setting with its default.
 - `tests\`: regression and failure tests with a stub `Unity.exe` (`tests\run-tests.ps1`); core problems they found are in `tests\FINDINGS.md`.
@@ -23,7 +24,7 @@ If `private/AGENTS.md` exists (a personal overlay, git-ignored in the public rep
 - **Never click dialog buttons.** On a timeout, list the windows and hand over to a person.
 - **No scheduled tasks, timers that close editors later, or logon autostart.** An expiring lease does not close an editor either.
 - **Never switch a clone's platform.** `-BuildTarget` is passed only when it matches the detected platform or on a first open.
-- **Respect leases.** Someone else's lease is released only with `-AnyOwner`, and only when a person says so. An on-demand slot open without a lease is in use.
+- **Respect leases.** Someone else's lease is released only with `-AnyOwner` or `-Stale` (stale leases of closed slots only), and only when a person says so. An on-demand slot open without a lease is in use.
 - **new-clone `-Apply` runs only after a person saw the dry-run plan and agreed.**
 - **Mask secrets.** Command lines and log lines go through `Protect-Text` / `Protect-LogLines` before they are printed or saved (`-accessToken`, `-hubSessionId`, `-cbmEditorLicense`, `-cbmMachineId`).
 - **Launch editors through WMI (`Win32_Process.Create`), never `Start-Process`.** In an app-container shell a child's `%LOCALAPPDATA%` writes are redirected and the shell's environment (secrets included) is inherited. For the same reason the registry and leases live in `%USERPROFILE%\.unity-slot`, not under AppData.
@@ -36,6 +37,7 @@ If `private/AGENTS.md` exists (a personal overlay, git-ignored in the public rep
 - **Next steps under MCP name the tools; the CLI wording does not change.** When `Test-ViaMcp` is true (`UNITY_SLOT_VIA=mcp`), write `Format-ToolCall 'wait_ready' @('slot', $name)` and so on instead of a `unity-slot <command>` line, and leave the owner out when it is the session's own (`Get-OwnerArg`). Compare the CLI output before and after a change.
 - **The MCP server writes only JSON-RPC messages to stdout.** Logs go to stderr. Tools return quickly (open and acquire with `-NoWait`, wait_ready at most 55 s). There is no kill tool; closing without saving and creating clones need explicit arguments.
 - **Do not touch audio settings** (volume, mute, Unity audio settings).
+- **branch-view only reads slots, and only the core does.** A view's slot remotes keep the placeholder `unity-slot-view://<slot>` as url and pushurl; only a fetch run by the core maps it (`-c url.<slot folder>.insteadOf=...`). Never store a slot path as a remote URL (origin too, when the registry's origin is a slot folder), never fetch into or push to a slot, never refresh views on a timer, never run hooks on a view. Dry run unless `-Apply`; tests compare the slots' `.git` before and after (`tests\cases\85-branchview.ps1`).
 
 ## Checks
 

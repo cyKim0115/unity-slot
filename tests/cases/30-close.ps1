@@ -150,3 +150,67 @@ Add-Test -Name 'close.lock-held-without-editor' -Group 'close' -Body {
     $refused = @(Get-NewEvents $E $n0 | Where-Object { $_.event -eq 'refused' })
     Assert-Equal (($refused | ForEach-Object { $_.detail.reason }) -join ',') 'lock held' 'refused events'
 }
+
+# examples\hooks\release-cleanup.ps1 as an afterClose hook: a leased release reverts the plain changes
+# of re-serialized kinds written while the editor was open (backup patch first); staged files, other
+# kinds and a close without a lease are left alone.
+Add-Test -Name 'close.release-cleanup-hook' -Group 'close' -Body {
+    param($E)
+    $c = $E.Clones['MyGame-1']
+    $record = @('{repo}\tests\fixtures\record-hook.ps1', '-Out', $E.HookLog)
+    $hooks = [ordered]@{
+        beforeClose  = @([ordered]@{ name = 'scene-beacon'; run = @('{repo}\examples\hooks\scene-beacon.ps1', '-Beacon', 'Temp\SceneBeacon.json') })
+        afterClose   = @([ordered]@{ name = 'release-cleanup'; run = @('{repo}\examples\hooks\release-cleanup.ps1', '-Also', 'Assets/Extra/*.xml') })
+        openStalled  = @([ordered]@{ name = 'record'; run = $record })
+        closeStalled = @([ordered]@{ name = 'record'; run = $record })
+    }
+    $files = @('Assets/M.mat', 'Assets/Keep.mat', 'Assets/C.cs', 'Assets/Extra/g.xml', 'ProjectSettings/P.asset')
+    foreach ($f in $files) { Write-TextFile (Join-Path $c $f) "v1`n" }
+    [void](Invoke-GitH @('add', '-A') $c)
+    [void](Invoke-GitH @('commit', '-q', '-m', 'cleanup fixtures') $c)
+    # the hook's git reads the clone's own config: same line endings as the test's git
+    [void](Invoke-GitH @('config', '--local', 'core.autocrlf', 'false') $c)
+    Write-EnvConfig $E $null @{ hooks = $hooks }
+    try {
+        Set-StubControl $c @{ mode = 'normal'; readyMs = '500' } -Reset
+        $r = Invoke-SlotCli $E @('acquire', 'agent', '-Project', 'mygame', '-Owner', 'ivy')
+        Assert-Exit $r 0
+        Assert-Like $r '^\[acquire\] READY pid \d+'
+        Start-Sleep -Milliseconds 1100
+        foreach ($f in $files) { Write-TextFile (Join-Path $c $f) "v2`n" }
+        [void](Invoke-GitH @('add', 'Assets/Keep.mat') $c)
+
+        $rel = Invoke-SlotCli $E @('release', 'MyGame-1', '-Owner', 'ivy')
+        Assert-Exit $rel 0
+        Assert-Has $rel '[release] hook    afterClose/release-cleanup: exit 0'
+        Assert-Like $rel 'cleanup 2 file\(s\) changed while open are kept'
+        Assert-Like $rel 'M  Assets/Keep\.mat \(staged or not a plain change\)'
+        Assert-Like $rel ' M Assets/C\.cs \(not a re-serialized kind\)'
+        Assert-Like $rel 'cleanup reverted 3 file\(s\) Unity re-serialized while the editor was open\. Backup: .+-MyGame-1\.patch'
+        Assert-Has $rel '[release] RELEASED MyGame-1'
+        $st = @(Invoke-GitH @('status', '--porcelain') $c)
+        Assert-Equal (($st | Sort-Object) -join '|') ' M Assets/C.cs|M  Assets/Keep.mat' 'git status after the release'
+        $patch = @(Get-ChildItem -LiteralPath (Join-Path $c 'Logs\unity-slot-cleanup') -Filter '*.patch')
+        Assert-Equal $patch.Count 1 'backup patches'
+        [void](Invoke-GitH @('apply', $patch[0].FullName) $c)
+        $st2 = @(Invoke-GitH @('status', '--porcelain') $c)
+        Assert-Equal $st2.Count 5 'changes back after git apply'
+
+        # without a lease (a person's close) nothing is reverted
+        [void](Invoke-GitH @('reset', '-q', '--hard') $c)
+        $o = Invoke-SlotCli $E @('open', 'MyGame-1')
+        Assert-Exit $o 0
+        Start-Sleep -Milliseconds 1100
+        Write-TextFile (Join-Path $c 'Assets/M.mat') "v3`n"
+        $x = Invoke-SlotCli $E @('close', 'MyGame-1')
+        Assert-Exit $x 0
+        Assert-Has $x '[close]   cleanup skipped: MyGame-1 is not leased (only an agent''s release or close cleans up)'
+        Assert-Equal (@(Invoke-GitH @('status', '--porcelain') $c) -join '|') ' M Assets/M.mat' 'git status after a close without a lease'
+    } finally {
+        [void](Stop-Stubs @($c))
+        Write-EnvConfig $E $null
+        [void](Invoke-GitH @('reset', '-q', '--hard', 'HEAD~1') $c)
+        [void](Invoke-GitH @('config', '--local', '--unset', 'core.autocrlf') $c)
+        Remove-Item -LiteralPath (Join-Path $c 'Logs\unity-slot-cleanup') -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}

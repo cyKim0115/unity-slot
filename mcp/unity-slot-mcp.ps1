@@ -85,7 +85,7 @@ $script:Tools = @(
             format    = (New-Prop 'string' 'summary (default, a short table) or json (the slot registry as JSON).')
             processes = (New-Prop 'boolean' 'Show editor processes and memory instead of the slot registry.')
             dashboard = (New-Prop 'boolean' 'Return the dashboard document (schema unity-slot.dashboard/1).')
-            git       = (New-Prop 'string' 'With dashboard: basic (default, each slot''s git status) or full (also local-only commits, branches, stash, worktrees).')
+            git       = (New-Prop 'string' 'With dashboard: basic (default, each slot''s git status and the repos list of working folders) or full (also local-only commits, branches, stash, worktrees, and per repository in repos the local branches, stashes and commits on no origin).')
         }) @() (New-Hints 'Unity slot status' $true $false $true $false)),
     (New-Tool 'acquire' ('Lease a free slot that fits a purpose or platform (for example agent, webgl, windows, android) ' +
             'and start its editor without waiting. Call it as soon as you know the task needs the Unity editor, before ' +

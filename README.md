@@ -2,6 +2,12 @@
 
 [English](README.en.md)
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-567e65)](LICENSE)
+![Windows 10 · 11](https://img.shields.io/badge/Windows-10%20%C2%B7%2011-3f6150)
+![Windows PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-3f6150)
+![Unity 6000.6 tested](https://img.shields.io/badge/Unity-6000.6%20tested-3f6150)
+![MCP stdio](https://img.shields.io/badge/MCP-stdio-96bea1)
+
 Unity 프로젝트의 클론 여러 개를 **슬롯**으로 등록해 두고, 에디터는 쓰는 동안에만 엽니다. AI 코딩 에이전트는 용도(「WebGL 클론」, 「아무 에이전트 클론」)로 슬롯을 임대해 그 안에서 일하고, 끝나면 놓습니다. 빈 슬롯이 없으면 새 클론 계획을 보여 주고, 사람이 동의해야 만듭니다.
 
 PowerShell 스크립트 하나와 작은 라이브러리, 선택으로 쓰는 MCP 서버로 되어 있습니다. 프로세스를 강제 종료하지 않고, 대화상자 버튼을 누르지 않고, 클론의 플랫폼을 바꾸지 않고, 타이머나 예약 작업을 만들지 않습니다.
@@ -109,17 +115,19 @@ stateDiagram-v2
 | `set <슬롯> [-Purpose a,b] [-Mode hot\|ondemand] [-AgentUse true\|false] [-Memo <글>] [-BuildTarget <플랫폼>]` | 슬롯에서 사람이 정하는 칸을 바꿉니다. |
 | `acquire <용도\|플랫폼> [-Project <repo>] [-Owner <id>] [-Hours 8] [-NoOpen \| -NoWait]` | 맞는 빈 슬롯을 임대하고 에디터를 엽니다. 없으면 exit 5. |
 | `release <슬롯> [-Owner <id>] [-KeepOpen] [-AnyOwner]` | 온디맨드 슬롯이면 에디터를 닫고(hot 슬롯은 열어 둡니다) 임대를 풉니다. 임대 주인만 할 수 있습니다. `-AnyOwner`는 사람이 시킬 때만 쓰세요. |
+| `release [<슬롯>] -Stale` | 주인과 상관없이 낡은 임대만 풉니다: 에디터·batchmode가 없는 슬롯이고, 임대가 만료됐거나 잡은 클라이언트 프로세스가 끝났을 때입니다. 에디터는 건드리지 않습니다. 슬롯을 빼면 낡은 임대를 모두 풉니다. 이름 준 슬롯의 임대가 낡지 않았으면 exit 4. `-AnyOwner`처럼 사람이 시킬 때만 쓰세요. |
 | `renew <슬롯> [-Owner <id>] [-Hours 8]` | 임대를 늘립니다. |
 | `new-clone <용도\|플랫폼> [-Project <repo>] [-From <슬롯>] [-Name <repo>-<번호>] [-CloneRoot <폴더>] [-NoOpen] [-Apply]` | 새 클론 계획(dry-run)을 보여 줍니다. `-Apply`면 만듭니다. [새 클론](#새-클론) 참고. |
 | `prepare <origin URL\|owner/repo\|슬롯\|클론> [-Count 2] [-BuildTarget <플랫폼>] [-CloneRoot <폴더>] [-NoOpen] [-Apply]` | 한 프로젝트를 이 PC에서 바로 쓸 수 있게 준비합니다: 기준 클론, 첫 임포트, 에이전트 클론 `-Count`개. 계획만 보여 주고 `-Apply`면 합니다. [새 PC 준비](#새-pc-준비) 참고. |
 | `hooks [<슬롯> -HookEvent <이벤트>]` | 쓰는 설정 파일, 이벤트별 훅, 추가 명령을 보여 줍니다. 슬롯과 `-HookEvent`를 주면 그 이벤트의 훅을 지금 돌립니다. |
 | `dashboard -Json [-Git basic\|full]` | 위젯·에이전트용 읽기 전용 JSON 문서 하나를 냅니다. [대시보드 JSON](#대시보드-json) 참고. |
+| `branch-view [-Project <repo>[,...]] [-Apply] [-Json]` | 프로젝트마다 슬롯들을 원격으로 둔 보기용 저장소(Fork에서 열 폴더 `<root>\<repo>`)를 만들거나 갱신합니다. Fork 같은 git 도구 하나로 모든 슬롯의 로컬 브랜치를 봅니다. 계획만 보여 주고 `-Apply`면 합니다. [브랜치 보기용 저장소](#브랜치-보기용-저장소) 참고. |
 | `<추가 명령>` | 설정에서 더한 명령([추가 명령](#추가-명령)). |
 
 모든 명령에 쓰는 옵션: `-NoHooks`(훅 모두 건너뜀), `-SkipHook a,b`(이름으로 건너뜀), `-TimeoutSec`, `-StandbyWorkers`, `-EditorRoot`, `-Python`.
 `-Project`에는 `owner/repo`, 저장소 이름, 그 이름의 끝을 쓸 수 있습니다. `-Owner` 기본값은 `UNITY_SLOT_OWNER`, 없으면 `claude:<CLAUDE_CODE_SESSION_ID 앞 8자>`, 없으면 `codex:<CODEX_THREAD_ID 끝 8자>`(Codex 셸 명령), 없으면 `user@host`입니다. Codex 스레드 ID는 앞부분이 시각이라 끝(무작위)을 씁니다.
 
-종료 코드: 0 정상(「이미 열림」·「이미 닫힘」 포함), 1 오류, 2 시간 초과(에디터는 그대로 둠), 3 에디터 버전 미설치, 4 거부(잠금, beforeClose 훅, batchmode 실행, 남의 임대, 플랫폼 전환, new-clone 점검 실패), 5 빈 슬롯 없음, 6 아직 시작 중.
+종료 코드: 0 정상(「이미 열림」·「이미 닫힘」 포함), 1 오류, 2 시간 초과(에디터는 그대로 둠), 3 에디터 버전 미설치, 4 거부(잠금, beforeClose 훅, batchmode 실행, 남의 임대, 플랫폼 전환, new-clone 점검 실패, 다른 branch-view 실행 중), 5 빈 슬롯 없음, 6 아직 시작 중.
 
 ## 설정
 
@@ -139,6 +147,7 @@ stateDiagram-v2
 | `platformAliases` | 없음 | 플랫폼 별칭. 예: `{ "mobile": "Android" }` |
 | `sceneBeacon` | 없음 | 프로젝트의 에디터 스크립트가 갱신하는 클론 기준 JSON 파일([형식](examples/hooks/scene-beacon.ps1)). 대시보드가 미저장 씬을 여기서 읽습니다. |
 | `dashboard` | commitHighPercent 85, commitCriticalPercent 90, leaseExpiringMinutes 30, localOnlyOldDays 14, recentEvents 20 | 대시보드 경고 표시의 기준값. 커밋 기준은 수용량 경고에도 씁니다. |
+| `branchView` | root `{state}\view`, minSlots 2 | branch-view의 보기용 저장소와 상태 파일을 두는 곳(스캔 루트 밖에 두세요), 보기용 저장소를 새로 만들 최소 슬롯 수. |
 | `hooks` | 없음 | 이벤트별 프로그램(다음 절). |
 | `commands` | 없음 | 추가 명령. |
 
@@ -176,6 +185,8 @@ stateDiagram-v2
 - `afterFirstOpen` 훅은 새 슬롯의 등록부 기록에서 기다리다가, 누가 열든(new-clone, open, wait, acquire) 그 에디터가 처음 준비됐을 때 한 번 돕니다.
 
 [examples/hooks/scene-beacon.ps1](examples/hooks/scene-beacon.ps1)은 저장하지 않은 씬이 있다고 알려 오면 close를 거부합니다. unity-slot은 미저장 씬을 스스로 볼 수 없어서, 프로젝트의 에디터 스크립트가 갱신하는 작은 JSON 파일을 읽습니다. 에디터 스크립트는 들어 있지 않습니다. 파일 형식은 훅 머리말에 있습니다.
+
+[examples/hooks/release-cleanup.ps1](examples/hooks/release-cleanup.ps1)은 `afterClose` 훅으로, 에이전트가 임대한 슬롯을 닫을 때(release·close) 에디터가 열린 동안 다시 쓴 직렬화 파일을 되돌립니다. 기본 대상은 `*.mat`, `*.asset`, `*.meta`, `ProjectSettings/*`이고 `-Also`로 더합니다(쉼표로 여럿). 열 때 깨끗했고, 열린 동안 쓰였고, 스테이징하지 않은 수정만 되돌립니다. 스테이징한 파일, 새 파일·지운 파일, 열 때 이미 바뀌어 있던 파일, 스크립트·씬·프리팹 같은 다른 종류는 그대로 두고 목록만 보여 줍니다. 임대가 없는 닫기(사람이 닫음)와 open 스냅샷이 없는 에디터는 건너뜁니다. 되돌리기 전에 `Logs\unity-slot-cleanup\<시각>-<슬롯>.patch`로 백업하고, `git apply <patch>`로 되살립니다. 남길 변경은 놓기 전에 커밋하거나 `git add`하세요.
 
 ## 추가 명령
 
@@ -236,6 +247,28 @@ flowchart TD
 - **시간.** 큰 프로젝트는 clone과 첫 임포트에 수십 분이 걸립니다. 사람의 터미널에서 돌리거나, 끊기면 다시 돌리세요.
 - 에이전트 슬롯은 용도 `agent`로 등록되므로, Claude Code·Codex·Cursor 어느 쪽이든 `acquire agent`로 잡습니다.
 
+## 브랜치 보기용 저장소
+
+슬롯마다 클론이 따로라, 어느 슬롯에 어떤 브랜치가 있는지 보려면 클론을 하나씩 열어야 합니다. `branch-view`는 프로젝트마다 보기용 저장소 하나를 만들고 그 프로젝트의 슬롯을 원격으로 둡니다. **Fork에서 열 폴더는 `<root>\<repo>`입니다**(기본 `<슬롯 홈>\view\<repo>`, 출력의 `open` 줄과 `-Json`·대시보드의 `path`). Fork 같은 git 도구로 그 폴더를 열면 REMOTES에 슬롯마다 로컬 브랜치가 보이고, 같은 이름 브랜치의 슬롯별 끝이 한 그래프에 나옵니다.
+
+```powershell
+.\unity-slot.ps1 branch-view                           # 계획만(쓰기 없음)
+.\unity-slot.ps1 branch-view -Apply                    # 만들기·갱신
+.\unity-slot.ps1 branch-view -Project mygame -Apply -Json
+```
+
+- **계획(기본):** 위치, 있음/없음, 마지막 갱신, 더하고 뺄 원격, 슬롯마다 할 일(`fetch (new|changed|...)`, `unchanged`, `SKIP busy`, `SKIP missing`), origin을 채울 슬롯, 크기(없으면 가장 큰 슬롯 pack 크기로 어림)를 보여 줍니다. 아무것도 쓰지 않고 `root` 폴더도 만들지 않습니다.
+- **`-Apply` 순서:** ① `<root>\<repo>.view-lock`을 공유 없이 엽니다(다른 실행이 잡고 있으면 아무것도 안 하고 exit 4). ①-2 옛 bare 형태 `<root>\<repo>.git`(0.7.0 개발 중에 쓰던 형태, 표식 `unity-slot.project`가 이 프로젝트)가 있고 `<root>\<repo>`가 없으면, 그 폴더를 `<root>\<repo>\.git`으로 옮기고(같은 볼륨 안 이름 바꾸기, 복사 아님) `core.bare=false`로 바꿉니다. 참조·원격 설정·상태 파일이 그대로 이어지므로 다시 받지 않습니다. 계획(기본)은 `move  older bare form ... -> folder form ...` 줄로 보여 주기만 합니다. 표식이 다른 프로젝트이거나 `<root>\<repo>`에 이미 다른 것이 있으면 둘 다 건드리지 않고 오류(exit 1)입니다. ② 없으면 `git init <root>\<repo>`(bare 아님. `git clone`은 로컬에서 슬롯 pack을 하드링크로 같이 쓰므로 쓰지 않습니다). ③ 슬롯마다 원격 하나: `url`·`pushurl` = `unity-slot-view://<슬롯>`, `fetch=+refs/heads/*:refs/remotes/<슬롯>/*`, `tagOpt=--no-tags`, `followRemoteHEAD=always`, `skipFetchAll=true`와 그 옛 이름 `skipDefaultUpdate=true`(자체 git을 쓰는 오래된 git 도구용), 표식 `unityslot=true`. 표식이 있는 원격만 고치거나 지우므로 사람이 더한 원격은 그대로입니다. 등록부에서 빠지거나 이름이 바뀐 슬롯의 원격은 참조와 함께 지웁니다. ④ 건너뛰기(git 없이 파일만 봄): 폴더가 없으면 `missing`, `gc.pid`가 12시간 안이거나 `objects\maintenance.lock`·`objects\pack\tmp_*`·`.tmp-*`가 1시간 안이면 `busy`(더 오래된 것은 「남은 임시 파일」로 알리기만), 참조 서명이 지난번 fetch와 같으면 `unchanged`. ⑤ fetch. 첫 실행은 몇 분 걸릴 수 있으므로 슬롯마다 fetch 바로 전에 busy를 다시 봅니다. ⑥ origin 채우기(그 슬롯도 바로 전에 busy를 다시 봄). ⑦ 상태 파일 `<root>\<repo>.view.json`을 임시 파일에 쓰고 바꿔 넣고, 보기용 저장소만 `git gc --auto`, 이벤트 `branchview`. 보기용 저장소에서 도는 git은 훅을 돌리지 않습니다(`core.hooksPath`가 아무도 만들지 않는 폴더를 가리킴. 전역 훅 경로나 누가 보기용 `hooks`에 넣은 훅도 돌지 않음). `branchView.root`가 슬롯 안이면 아무것도 하지 않고 오류입니다.
+- **폴더 형태:** Fork는 bare 저장소를 열지 못하므로 보기용 저장소는 `.git` 하나만 든 일반 폴더 `<root>\<repo>`입니다(git 디렉터리 `<root>\<repo>\.git`, `-Json`·상태 파일·대시보드의 `gitDir`). 체크아웃·`read-tree`·로컬 브랜치 만들기는 하지 않습니다. HEAD는 아직 커밋이 없는 기본 브랜치 그대로라 `git status`가 깨끗하고, `refs/heads`는 비어 있으며 모든 참조는 `refs/remotes/*`에 있습니다. 잠금·상태 파일(`<root>\<repo>.view-lock`, `<root>\<repo>.view.json`)은 폴더 바깥 옆자리에 둡니다. 코어가 보기용 저장소에 부르는 git은 늘 `--git-dir=<root>\<repo>\.git --work-tree=<root>\<repo>`로 그 저장소만 가리킵니다. Fork가 자동 fetch로 슬롯 원격을 받으려다 실패해도 무해합니다(자리표시 주소라 아무것도 읽지 않음, origin은 그대로 받음). 보기용 폴더에서는 브랜치를 체크아웃하지 마세요(Fork의 Checkout). 프로젝트 파일이 폴더에 풀리고 로컬 브랜치가 생깁니다. branch-view는 `refs/remotes/*`만 쓰므로 계속 동작하지만 폴더가 커집니다. 되돌리려면 폴더를 지우고 `branch-view -Apply`를 다시 돌립니다.
+- **슬롯은 읽기만 합니다. 슬롯을 읽는 것은 코어뿐입니다.** 슬롯 원격의 주소는 어떤 git도 받을 수 없는 자리표시(`unity-slot-view://<슬롯>`)이고, 코어만 `git -c url.<슬롯 폴더>.insteadOf=unity-slot-view://<슬롯> fetch --prune --porcelain --no-write-fetch-head --no-auto-gc <슬롯>`(`GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0`)으로 받습니다. 그래서 git 도구의 자동 fetch나 사람의 `git fetch <슬롯>`·`git push`는 「remote helper aborted」로 실패하고, `fetch --all`은 슬롯 원격을 건너뜁니다(`skipFetchAll`). 이유: Windows에서는 슬롯이 repack하는 동안 다른 프로세스가 pack을 읽으면 슬롯 쪽 repack이 실패하고 짝 없는 `.idx`가 남을 수 있습니다(실험에서 45번 중 5~6번, 읽는 쪽이 없으면 0번). 그래서 바뀐 슬롯만, 바쁘지 않을 때, 사람이 부를 때만 읽습니다. 자동·주기 갱신은 없습니다.
+- **참조 서명:** 그 슬롯을 fetch하기 바로 전에, `refs\heads` 아래 모든 파일의 상대 경로·크기·수정 시각, `HEAD` 내용, `packed-refs`·`shallow`·`reftable\tables.list`의 크기·시각으로 만듭니다. `feature/x`처럼 폴더 아래 브랜치의 커밋은 그 파일만 바뀌므로 폴더 시각으로는 놓칩니다.
+- **분리 HEAD·shallow:** 분리 HEAD 슬롯은 `refs/remotes/<슬롯>/(detached)`로도 받고(서명이 같아도 그 참조가 없으면 다시 받음), 그동안 `<슬롯>/HEAD`는 지웁니다. 다시 브랜치로 오면 `(detached)`는 prune되고 `<슬롯>/HEAD`가 다시 생깁니다. shallow 슬롯은 마지막에 `--update-shallow`로 받습니다(없으면 git이 참조를 조용히 거부합니다). 그러면 보기용 저장소도 shallow가 되고, 그 경계 커밋은 부모 없이 보입니다. 보기용 쪽 참조 잠금이 겹치면 1초 뒤 한 번 다시 합니다.
+- **origin:** 원격 `origin`은 등록부의 실제 URL이고 `pushurl`은 자리표시입니다(git 도구에서 origin을 fetch하면 네트워크로 최신화됩니다). 코어는 네트워크를 쓰지 않고, `FETCH_HEAD`가 가장 새 슬롯의 `refs/remotes/origin/*`을 빨리감기로만 채웁니다(`origin/HEAD` 제외). 그 슬롯의 `refs/remotes/origin` 아래가 바뀌었을 때(fetch나 push)만 다시 채웁니다. 그 슬롯이 shallow면 `--update-shallow`로 받습니다(없으면 새 shallow 경계가 필요한 참조를 git이 exit 0으로 버립니다). 빨리감기가 아니라 거부된 참조 가운데, 슬롯 쪽 값이 보기용 쪽 값의 조상인 것은 낡은 것이 아닙니다(git 도구에서 origin을 fetch해 보기용 쪽이 앞섬). 그대로 두고 `-Json`의 `origin.ahead[]`에 이름만 남깁니다. 나머지(upstream 강제 푸시·삭제 뒤 다시 만듦)는 상태 파일의 `origin.rejected[]`(이름·양쪽 sha)에 남고 「origin partly stale」로 보입니다. 등록부의 origin이 슬롯 폴더(경로나 `file://`)면 그 슬롯을 git 도구가 읽게 되므로 `origin`의 `url`도 자리표시 `unity-slot-view://origin`으로 둡니다.
+- **백업이 아닙니다.** `--prune`이라 슬롯에서 지운 브랜치는 여기서도 사라집니다. 커밋 안 한 변경, untracked, stash, reflog에만 남은 커밋, 태그는 보이지 않습니다. 마지막 갱신 때의 모습이라, 대시보드 `branchViews[]`의 `updatedAt`·`changedSince`로 신선도를 봅니다.
+- **크기·시간:** 보기용 저장소는 가장 큰 슬롯 pack과 비슷합니다(슬롯끼리 다른 것은 그 슬롯의 커밋 정도). 처음은 그 크기를 한 번 복사하는 시간, 그다음은 바뀐 슬롯당 0.1~0.3초 정도입니다. `sizeBytes`는 보기용 `objects` 아래 모든 파일(pack과 작은 fetch가 풀어 둔 낱개 객체)의 합입니다.
+- **만들지 않는 경우:** 슬롯이 `branchView.minSlots`(2)보다 적은 프로젝트는 새로 만들지 않습니다(이미 있으면 갱신합니다). 다른 프로젝트가 같은 저장소 이름을 쓰면 `<owner>-<repo>`로 짓습니다(상태 파일과 `git config unity-slot.project`로 구별).
+- **출력·종료 코드:** `-Json`이면 stdout에 문서 하나(`{"schema":"unity-slot.branch-view/1","version":...,"apply":...,"root":...,"views":[...]}`)만 쓰고 진행 줄·git 오류·`ERROR`는 stderr로 보냅니다. `views[]` 항목은 대시보드 `branchViews[]` 항목 칸(`path`, `gitDir` 포함)에 `name`, `exists`, `moveFrom`(옮길·옮긴 옛 bare 폴더, 없으면 `null`), `action`(`create`·`refresh`·`none`·`skip`·`busy`·`error`), `reason`, `remotes`(`add`·`update`·`remove`·`conflict`), `sizeBytes`, `estimatedBytes`, `seconds`와 슬롯별 `path`·`action`·`updates`·`detached`·`shallow`·`note`·`leftovers`, origin의 `ahead`·`url`·`urlNote`·`action`·`source`·`updates`·`error`·`filledAt`·`fetchHeadAt`을 더한 모양입니다. 종료 코드 0 정상(실패한 슬롯은 목록으로), 1 오류, 4 다른 실행이 잠금을 잡고 있음. MCP 도구는 없습니다.
+
 ## MCP 서버
 
 [mcp/unity-slot-mcp.ps1](mcp/unity-slot-mcp.ps1)은 코딩 에이전트용 stdio MCP 서버입니다(JSON-RPC, 한 줄에 메시지 하나). Windows PowerShell 5.1 말고는 필요한 것이 없습니다. 도구 호출마다 `unity-slot.ps1`을 자식 프로세스로 돌려 그 출력을 돌려주므로 로직은 한 곳에 있습니다. 클라이언트가 세션마다 서버를 띄우고, stdin이 닫히면 끝납니다.
@@ -255,7 +288,7 @@ flowchart TD
 임대 주인은 Claude Code에서는 `claude:<세션>`입니다(MCP 밖에서 CLI를 부를 때도 같습니다. Codex 셸에서 부른 CLI는 `codex:<스레드 끝 8자>`입니다). Claude Code는 MCP 서버에 세션 ID를 넘겨 주므로 서버가 다시 떠도 주인이 같습니다. Codex는 정해진 환경변수만 넘기고 Cursor는 대화·세션 ID를 넘기지 않아(2026-11 확인), 그 밖의 클라이언트는 `<클라이언트 이름>:<무작위>`이고 서버가 다시 뜨면 새 ID가 됩니다. 그래서 MCP로 잡은 임대에는 클라이언트 프로세스(이름·pid·시작 시각)를 남기고, `status`와 거부된 `release`가 안내를 붙입니다.
 
 - 같은 클라이언트 이름의 다른 ID가 가진 임대: 이 대화가 서버 재시작 전에 잡았다면(그때 acquire 결과에 그 주인이 나왔다면) `release(slot="X", owner="<그 주인>")`, 아니면 다른 대화의 것이니 그대로 둡니다.
-- 잡은 클라이언트 프로세스가 끝난 임대: 주인 없는 임대(`lease-client-gone`)라서 사용자에게 넘깁니다. 사람은 CLI `release <슬롯> -AnyOwner`로 풉니다.
+- 잡은 클라이언트 프로세스가 끝난 임대: 주인 없는 임대(`lease-client-gone`)라서 사용자에게 넘깁니다. 사람은 에디터가 닫혀 있으면 CLI `release <슬롯> -Stale`, 열려 있으면 `release <슬롯> -AnyOwner`로 풉니다.
 
 결과의 첫 줄은 `[unity-slot exit <코드>: <뜻>, <초>s]`입니다(예: `[unity-slot exit 0: ok, 1.2s]`). 서버는 stderr에 `tools/call <도구> <초>s exit <코드>`를 남깁니다. `isError`는 종료 코드 1·3·4일 때 true입니다. 결과 속 다음 단계는 도구 이름으로 나옵니다(예: `wait_ready(slot="MyGame-2")`, `release(slot="MyGame-2")`, 주인은 세션 기본값이 아닐 때만). CLI 문구는 그대로입니다.
 
@@ -321,23 +354,54 @@ tool_timeout_sec = 300
 
 `unity-slot dashboard -Json [-Git basic|full]`은 stdout에 JSON 문서 하나만(한 줄, UTF-8) 쓰고 exit 0으로 끝납니다. 오류면 stdout은 비우고 stderr에 메시지를 쓰고 exit 1입니다. 읽기 전용입니다: 프로세스 조회 한 번, git은 `--no-optional-locks`, 훅 없음, 출력에 명령줄 없음. 시험한 기기에서 PowerShell 시작까지 합쳐 `basic` 약 1.7초, `full` 약 2.2초 걸렸습니다.
 
-- **맨 위:** `schema`(`unity-slot.dashboard/1`, 주 번호가 바뀌면 호환되지 않음), `version`, `time`, `host`, `registry`(`path`, `updatedAt`, `maxEditors`), `system`(`commit`의 `usedGB`/`limitGB`/`percent`, `freePhysicalGB`, `editorsOpen`), `slots`, `unregisteredEditors`, `orphanWorkers`, `recentEvents`, `systemFlags`, `timing`(`totalMs`, `processMs`, `gitMs`). 시각은 로컬 오프셋이 붙은 ISO 8601, 크기는 소수 둘째 자리 GB, 없는 값은 `null`입니다.
+- **맨 위:** `schema`(`unity-slot.dashboard/1`, 주 번호가 바뀌면 호환되지 않음), `version`, `time`, `host`, `registry`(`path`, `updatedAt`, `maxEditors`), `system`(`commit`의 `usedGB`/`limitGB`/`percent`, `freePhysicalGB`, `editorsOpen`), `slots`, `unregisteredEditors`, `orphanWorkers`, `recentEvents`, `systemFlags`, `timing`(`totalMs`, `processMs`, `gitMs`), `repos`(0.7.0), `branchViews`(0.7.0, 맨 끝). 시각은 로컬 오프셋이 붙은 ISO 8601, 크기는 소수 둘째 자리 GB, 없는 값은 `null`입니다.
 - **슬롯마다:** 등록부 칸(`name`, `path`, `project`, `repo`, `kind`, `unity`, `platform`, `purposes`, `mode`, `agentUse`, `memo`), `exists`, `editor`, `lease`, `git`, `lastOpenedAt`, `lastClosedAt`, `flags`.
 - **`editor.state`:** `closed`, `starting`, `ready`, `stalled`(`timeouts.stalled`가 지나도 준비 안 됨), `unknown`(읽을 클론 로그가 없음, 예: Hub가 띄운 에디터), `batch`, `missing`. 에디터가 있으면 `pid`, `startedAt`, `readyAt`, `readySeconds`, `launch`(`hub`/`direct`), `standby`, `lock`, `unsavedScene`(`sceneBeacon`), `memory`(`editorPrivGB`, `workersPrivGB`, `childrenPrivGB`, `totalPrivGB`, `totalWsGB`, `workers`, `children`).
-- **`lease`:** `owner`, `need`, `acquiredAt`, `expiresAt`, `expired`, `openedByAcquire`, `host`, `client`(MCP로 잡은 임대의 클라이언트 프로세스 `name`·`pid`·`startedAt`·`alive`, 그 밖에는 `null`), 임대가 없으면 `null`.
-- **`git`:** `level`, `branch`, `upstream`, `upstreamGone`, `changes`, `ahead`, `behind`, `lastFetchAt`, `commonDir`, `error`. `full`이면 `localOnly`(원격 추적 참조 어디에도 없는 로컬 브랜치 커밋 `commits`와 `oldestAt`), `branches`(`total`, `noUpstream`, `upstreamGone`), `stash`, `worktrees`(같은 저장소의 다른 작업 폴더)도 냅니다. git 디렉터리를 같이 쓰는 슬롯은 한 번만 셉니다. fetch는 하지 않습니다.
-- **`flags`:** `open-without-lease`(임대 없이 열린 온디맨드 슬롯), `lease-expired-open`, `lease-expiring`, `lease-client-gone`(임대를 잡은 MCP 클라이언트 프로세스가 끝남), `stalled`, `unsaved-scene`, `stale-lock`(닫혔는데 `Temp\UnityLockfile`이 잠김), `batch-running`, `missing-path`, `local-only-old`(`full`만). **`systemFlags`:** `commit-high`, `commit-critical`, `editors-at-max`.
+- **`lease`:** `owner`, `need`, `acquiredAt`, `expiresAt`, `expired`, `openedByAcquire`, `host`, `client`(MCP로 잡은 임대의 클라이언트 프로세스 `name`·`pid`·`startedAt`·`alive`, 그 밖에는 `null`), `stale`(`release -Stale`이 풀 수 있는 임대: 에디터·batchmode가 없고, 만료됐거나 클라이언트가 끝남), 임대가 없으면 `null`.
+- **`git`:** `level`, `branch`(분리 HEAD면 git이 내는 그대로 `(detached)`), `upstream`, `upstreamGone`, `changes`, `ahead`, `behind`, `lastFetchAt`, `commonDir`, `error`, `head`(HEAD 커밋 sha), `detached`, `changesDetail`(`staged`, `unstaged`, `untracked`, `conflicted`), `gitDir`(이 폴더의 git 디렉터리. 클론이면 `commonDir`와 같고, 링크 워크트리면 `<commonDir>\worktrees\<이름>`). 뒤의 넷은 0.7.0에서 더했고 `basic`에서도 나옵니다(같은 `git status` 한 번). `changes`는 항목 수이고 한 항목이 staged이면서 unstaged일 수 있어, `changesDetail`의 합은 `changes`보다 클 수 있습니다. `full`이면 `localOnly`(원격에 없는 커밋의 `commits`와 `oldestAt`, 아래 참고), `branches`(`total`, `noUpstream`, `upstreamGone`), `stash`, `worktrees`(같은 저장소의 다른 작업 폴더)도 냅니다. git 디렉터리를 같이 쓰는 슬롯은 한 번만 셉니다. fetch는 하지 않습니다.
+- **원격에 없는 커밋 = origin에 없는 커밋:** 로컬 브랜치의 커밋 가운데 `origin`의 원격 추적 참조에 없는 것입니다(`git log --branches --not --remotes=origin`). origin 말고 원격이 더 있으면 URL이 서버인 원격도 빼고 세고, URL이 이 PC의 폴더(다른 클론 등)인 원격은 빼지 않습니다. 슬롯끼리 로컬 원격을 더해도 서버에 없는 작업이 경고에서 빠지지 않게 하기 위해서입니다. 마지막 fetch 때의 원격 추적 참조 기준입니다.
+- **`repos`(0.7.0):** git 디렉터리(`commonDir`)마다 하나, 등록부 순서입니다. `basic`에서도 나오고, `full` 전용 칸은 `basic`에서 `null`입니다. 키가 없으면 0.7.0 이전 코어, summary(`-Shallow`)는 `repos: null`입니다. 아래 표 참고.
+- **`flags`:** `open-without-lease`(임대 없이 열린 온디맨드 슬롯), `lease-expired-open`, `lease-expiring`, `lease-client-gone`(임대를 잡은 MCP 클라이언트 프로세스가 끝남), `stalled`, `unsaved-scene`, `stale-lock`(닫혔는데 `Temp\UnityLockfile`이 잠김), `batch-running`, `missing-path`, `local-only-old`(`full`만, 그 저장소의 원격에 없는 가장 오래된 커밋이 `dashboard.localOnlyOldDays`보다 오래됨). **`systemFlags`:** `commit-high`, `commit-critical`, `editors-at-max`.
+
+**`repos[]` 항목**
+
+| 칸 | `basic` | 내용 |
+|---|---|---|
+| `commonDir` | 나옴 | 슬롯 `git.commonDir`와 같은 값(대소문자 무시로 맞춤) |
+| `project`, `repo` | 나옴 | 그 git 디렉터리를 쓰는 첫 슬롯의 등록부 값 |
+| `level` | 나옴 | `basic` / `full` |
+| `layout`, `hub` | 나옴 | `clone`(작업 폴더 하나), `worktrees`(링크 워크트리가 있음), `bare-hub`(주 작업 폴더가 없음, `hub` = git 디렉터리). `hub`는 `bare-hub`일 때만 값이 있습니다 |
+| `lastFetchAt`, `defaultBranch` | 나옴 | `FETCH_HEAD` 시각, `refs/remotes/origin/HEAD`가 가리키는 브랜치(예: `origin/master`, 없으면 `null`) |
+| `folders[]` | 나옴 | 작업 폴더마다 `path`, `slot`(등록된 슬롯이면 이름), `main`, `branch`(분리 HEAD면 `null`), `head`, `detached`, `locked`·`prunable`(링크 워크트리만, 주 폴더는 `null`), `localOnly`(`full`이고 분리 HEAD일 때만: 어느 브랜치에도, 원격에도 없는 커밋 `commits`·`oldestAt`). 슬롯 폴더는 그 슬롯의 `git status` 값이라, 「누가 어느 브랜치를 체크아웃했나」는 `basic`만으로 최신입니다 |
+| `branches[]` | `null` | 로컬 브랜치마다 `name`, `tip`, `tipAt`, `subject`(120자까지), `upstream`, `upstreamGone`, `ahead`/`behind`(upstream 대비, upstream이 없거나 사라졌으면 `null`), `baseAhead`/`baseBehind`/`merged`(`defaultBranch` 대비, git 2.41 미만이면 `merged`만, 기본 브랜치가 없으면 `null`), `localOnly`(그 브랜치에서 닿는 원격에 없는 커밋 `commits`·`oldestAt`, 저장소의 원격에 없는 커밋이 2만 개를 넘거나 `log`가 실패하면 `null`), `checkedOutBy[]`(`path`, `slot`, 없으면 `[]`) |
+| `stashes[]` | `null` | `index`(0이 최신), `sha`, `at`, `branch`(메시지의 `On <브랜치>:`), `message`. `logs\refs\stash` 파일에서 읽습니다 |
+| `localOnly` | `null` | 저장소 전체의 원격에 없는 커밋 `commits`, `oldestAt` |
+| `flags` | `null` | `local-only-old`(원격에 없는 가장 오래된 커밋이 `dashboard.localOnlyOldDays`보다 오래됨, 슬롯 플래그와 같은 뜻), `detached-local-only`(분리 HEAD에만 있는 커밋이 있음) |
+| `error` | 나옴 | git 실패 메시지, 없으면 `null` |
+
+**`branchViews[]` 항목**(0.7.0): `branchView.root`의 상태 파일(`*.view.json`)마다 하나입니다. 상태 파일과 슬롯의 참조 서명만 읽고 git은 부르지 않습니다(파일은 쓰기·삭제를 막지 않는 공유로 엽니다). 폴더가 없으면 `[]`, summary(`-Shallow`)는 `null`입니다.
+
+| 칸 | 내용 |
+|---|---|
+| `project`, `repo`, `path` | 프로젝트, 저장소 이름, 보기용 저장소 폴더(Fork로 열 곳, `<root>\<repo>`. 옛 bare 형태의 상태 파일이면 그 bare 폴더) |
+| `gitDir` | 보기용 저장소의 git 디렉터리(`<root>\<repo>\.git`. 옛 bare 형태의 상태 파일이면 `path`와 같음) |
+| `createdAt`, `updatedAt`, `coreVersion` | 처음 만든 시각, 마지막 `-Apply` 시각, 그때 코어 버전 |
+| `slots[]` | `slot`, `remote`, `status`(`fetched`·`unchanged`·`busy`·`missing`·`failed`, 등록부에는 있는데 아직 받지 않은 슬롯은 `not-fetched`), `fetchedAt`(마지막으로 받은 시각), `changedSince`(그 뒤 슬롯 참조가 바뀌었나. 등록부에 없거나 폴더가 없으면 `null`), `error` |
+| `origin` | `filledFrom`(origin/*을 채운 슬롯), `rejected[]`(`name`·`viewSha`·`slotSha`: 빨리감기가 아니라 낡은 채 남은 origin 참조) |
+| `error` | 상태 파일을 못 읽음, 보기용 저장소 없음 등, 없으면 `null` |
+
+클론끼리는 객체 저장소가 따로라, 같은 이름 브랜치가 여러 클론에 있으면 클론마다 따로 나옵니다. 같은 이름 브랜치를 합쳐 판정하는 일은 위젯이 `project`로 묶어서 합니다. git 호출은 슬롯마다 `status` 한 번(`basic`), `full`이면 git 디렉터리마다 `for-each-ref` 한 번과 `log` 한 번(분리 HEAD 폴더는 `log` 한 번 더)이고, 나머지(HEAD, 원격 설정, stash 기록, 워크트리 목록)는 파일 읽기입니다. 시험한 기기(슬롯 12개)에서 `full`은 0.6.1보다 저장소당 약 10~25ms 더 걸렸습니다.
 
 상태 폴더의 파일 두 개가 함께 갑니다.
 
-- **`events.jsonl`:** `open`, `ready`, `close`, `acquire`, `release`, `renew`, `takeover`(만료 임대 넘겨받기), `refused`마다 한 줄입니다. 예: `{"time":"...","event":"close","slot":"MyGame-2","path":"...","owner":"claude:1a2b3c4d","pid":4120,"via":"cli","detail":{"closeSeconds":4.4,"commitDeltaGB":-7.8,"changedFiles":0}}`. `via`는 `cli`나 `mcp`입니다. 1MB가 넘으면 `events-prev.jsonl`로 옮깁니다. `lastOpenedAt`·`lastClosedAt`·`recentEvents`가 여기서 나옵니다.
+- **`events.jsonl`:** `open`, `ready`, `close`, `acquire`, `release`, `renew`, `takeover`(만료 임대 넘겨받기), `refused`, `branchview`(`-Apply` 한 번에 프로젝트마다 하나: `slot`은 `null`, `path`는 보기용 저장소, `detail`에 `project`·`created`·`fetched`·`unchanged`·`skipped[]`·`failed[]`·`added[]`·`removed[]`·`originRejected`·`seconds`)마다 한 줄입니다. 예: `{"time":"...","event":"close","slot":"MyGame-2","path":"...","owner":"claude:1a2b3c4d","pid":4120,"via":"cli","detail":{"closeSeconds":4.4,"commitDeltaGB":-7.8,"changedFiles":0}}`. `via`는 `cli`나 `mcp`입니다. 1MB가 넘으면 `events-prev.jsonl`로 옮깁니다. `lastOpenedAt`·`lastClosedAt`·`recentEvents`가 여기서 나옵니다.
 - **`install.json`:** `{"script":"<unity-slot.ps1 전체 경로>","version":"...","schema":1}`. 실행할 때마다 갱신하므로 위젯이 설정 없이 코어를 찾습니다. 가리키는 다른 사본이 있으면 버전과 상관없이 바꾸지 않습니다(개발 중인 사본도 돌기 때문입니다). 옮기려면 이 파일을 지우세요. 다음에 실행되는 사본이 가져갑니다.
 
 ## 위젯
 
 [Unity Slot Widget](https://github.com/cyKim0115/unity-slot-widget)은 이 대시보드 문서를 바탕화면에 늘 띄워 두는 작은 Tauri 위젯입니다. 슬롯마다 에디터 상태(닫힘·여는 중·준비됨·멈춤)와 켜진 시간, 임대 주인, 에디터 트리 메모리, 원격에 없는 커밋 같은 로컬 git 상태를 보여 줍니다. 임대 없이 열린 에디터나 높은 커밋 메모리 같은 경고도 띄웁니다.
 
-- **읽기 전용입니다.** 슬롯을 열거나 닫거나 임대하지 않고, 판단은 모두 `dashboard -Json`이 합니다.
+- **읽기가 기본입니다.** 판단은 모두 `dashboard -Json`이 합니다. 사람이 누를 때만 에디터를 열고(`open -NoWait`) 보기용 저장소를 만들거나 갱신합니다(`branch-view`, 0.2.0). 슬롯을 닫거나 임대하지 않습니다.
 - **코어 찾기:** `install.json`으로 코어를 찾으므로, unity-slot을 한 번 실행한 기기라면 따로 설정할 것이 없습니다.
 - **갱신:** 평소 30초마다 조회합니다. 에디터를 여는 중이면 5초마다 조회하고, Unity 프로세스나 상태 폴더 파일이 바뀌면 바로 조회합니다. 위젯을 숨기면 조회도 멈춥니다.
 
@@ -347,11 +411,11 @@ tool_timeout_sec = 300
 - **Hub 없이.** 에디터는 실행 중인 Licensing Client에 붙어 entitlement를 받습니다. Hub 토큰이 없어서 로그에 `Access token is unavailable; failed to update`가 찍히지만, 열기에는 지장이 없습니다.
 - **준비 판정.** 에디터를 `-logFile <클론>\Logs\Editor.log`로 띄우고, 그 프로세스 ID의 `##utp:` `ProjectInfo` 줄이 찍히면 준비로 봅니다. 그 줄이 없는 옛 에디터는 `[Project] Loading completed` 15초 뒤를 준비로 봅니다. 이전 로그는 `Editor-prev.log`로 남겨 둡니다.
 - **이미 열림.** 실행 중인 `Unity.exe` 명령줄의 `-projectPath`로 맞춥니다(Hub 형식 `-projectpath C:\x`와 임포트 워커 형식 `"-projectPath" "C:/x"` 모두). 맞는 프로세스가 없는데 `Temp\UnityLockfile`이 잠겨 있으면 열지 않습니다.
-- **닫기.** X 버튼과 같은 `CloseMainWindow`라서 Unity가 평소처럼 저장합니다. 끝날 때까지 기다리고, 자식 프로세스(임포트 워커, 컴파일러 서버, MCP 서버)를 30초 동안 지켜봅니다. 닫기 직전의 `git status`와, open이 `Logs\unity-slot-open.txt`에 남긴 스냅샷을 비교해 「닫으며 쓴 파일」과 「열린 동안 바뀐 파일」(에디터가 재직렬화한 에셋 등)을 보여 줍니다. 보고만 하고 되돌리지 않습니다.
+- **닫기.** X 버튼과 같은 `CloseMainWindow`라서 Unity가 평소처럼 저장합니다. 끝날 때까지 기다리고, 자식 프로세스(임포트 워커, 컴파일러 서버, MCP 서버)를 30초 동안 지켜봅니다. 닫기 직전의 `git status`와, open이 `Logs\unity-slot-open.txt`에 남긴 스냅샷을 비교해 「닫으며 쓴 파일」과 「열린 동안 바뀐 파일」(에디터가 재직렬화한 에셋 등)을 보여 줍니다. 코어는 보고만 하고 되돌리지 않습니다. 되돌리기는 `afterClose` 훅(예: `release-cleanup.ps1`)이 합니다.
 - **플랫폼.** 열린 에디터는 창 제목, 닫힌 클론은 `Library\EditorUserBuildSettings.asset`의 활성 플랫폼 그룹으로 봅니다. `Library\PlayerDataCache`는 마지막 플레이어 빌드만 보여 줍니다. 클론의 플랫폼을 바꾸게 되는 `-BuildTarget`은 거부합니다. 전부 다시 임포트하게 되기 때문입니다.
 - **쉬는 워커.** Unity 6000.6은 `-standbyWorkerCount 0`을 거부하고(「Failed to set standby worker count to 0」) 기본값 2를 씁니다. 1은 받습니다. 그래서 기본값이 1입니다.
 - **비밀값.** Hub가 띄운 에디터의 명령줄과 Editor.log 머리에는 `-accessToken`·`-hubSessionId`가, 임포트 워커에는 `-cbmEditorLicense`·`-cbmMachineId`가 있습니다. unity-slot이 출력하는 명령줄과 로그 줄에서는 이 값을 `***`로 바꿉니다.
-- **하지 않는 것.** 강제 종료, 대화상자 클릭, 나중에 에디터를 닫는 예약 작업·타이머, `git pull`, 플랫폼 전환, 소리 설정 변경. 새 클론은 사람이 동의한 뒤 `-Apply`로만 만듭니다.
+- **하지 않는 것.** 강제 종료, 대화상자 클릭, 나중에 에디터를 닫는 예약 작업·타이머, `git pull`, 슬롯 저장소에 쓰는 git, 보기용 저장소 자동·주기 갱신, 플랫폼 전환, 소리 설정 변경. 새 클론은 사람이 동의한 뒤 `-Apply`로만 만듭니다.
 
 ## 시험한 환경
 
@@ -370,8 +434,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1 -List
 
 - **스텁.** `tests\stub\UnityStub.cs`를 Windows에 들어 있는 .NET Framework 컴파일러(`csc.exe`)로 빌드합니다. `-projectPath`·`-logFile`·`-standbyWorkerCount`·`-buildTarget`을 읽고, Unity와 같은 꼴의 창 제목, `Temp\UnityLockfile`, Editor.log의 `##utp` `ProjectInfo` 줄, X(CloseMainWindow)로 닫기, 네이티브 버튼이 있는 대화상자, 씬 비컨, 임포트 워커(`-parentPid`)를 흉내 냅니다. 동작은 클론의 `Temp\unity-stub.txt`(제어 파일)로 정합니다: `normal`, `never-ready`, `dialog`, `slow-close`, `ignore-close`, `dirty`, `exit-early`. WMI로 뜬 프로세스는 호출한 셸의 환경변수를 받지 않으므로 환경변수로는 정하지 않습니다.
 - **격리.** 시험 폴더(기본 `%TEMP%\unity-slot-tests\<시각>`)에 스텁, 로컬 bare origin, 가짜 클론(`MyGame`, `MyGame-1`, `MyGame-2`, `MyGame-Web`)을 만들고, 그룹마다 `UNITY_SLOT_HOME`·`UNITY_SLOT_CONFIG`를 따로 줍니다. 가짜 클론의 Unity 버전은 `9999.0.0f1`이라 실제 에디터가 열릴 일이 없습니다. 실행 전후로 실제 `slots.json`·`install.json`의 수정 시각과 해시가 같은지 확인합니다.
-- **그룹.** `lease`(임대·경쟁·만료 임대 넘겨받기·빈 슬롯·상시 슬롯), `close`(닫기 거부·시간 초과·batchmode·잠금), `start`(STARTING·STALLED·대화상자 목록·`-TimeoutSec`·버전·플랫폼), `report`(`events.jsonl`·`install.json` 포인터·대시보드·비밀값), `mcp`(프로토콜·임대 흐름), `phase2`(MCP 안내 문구·시간·annotations·status 요약·수용량 경고·시작 단계, 아직 코어에 없는 개선은 SKIP), `prepare`(origin에서 기준 클론·첫 열기·에이전트 클론 2개, 다시 돌리기, 끊긴 실행 이어 가기, 남이 연 에디터·플랫폼 전환 거부). 그룹은 따로 프로세스에서 3개씩 함께 돌고, 그룹 안의 시험은 차례로 돕니다.
+- **그룹.** `lease`(임대·경쟁·만료 임대 넘겨받기·빈 슬롯·상시 슬롯), `close`(닫기 거부·시간 초과·batchmode·잠금·release-cleanup 훅), `start`(STARTING·STALLED·대화상자 목록·`-TimeoutSec`·버전·플랫폼), `report`(`events.jsonl`·`install.json` 포인터·대시보드·비밀값), `repos`(대시보드 `repos[]`와 슬롯 git 새 칸: 모양, 원격에 없는 커밋·upstream·기본 브랜치 대비·stash·충돌·분리 HEAD, 로컬 경로 원격, git 2.41 미만·풀리지 않는 기본 브랜치·브랜치별 걷기 상한(픽스처가 같은 프로세스에서 흉내), 읽기 전후 `.git` 스냅숏), `branchview`(계획만·만들기와 참조·슬롯 `.git` 전후 경로·크기·시각·sha256 차이 0(잠금 파일·shallow 슬롯 포함)·바뀐 슬롯만 fetch와 prune·폴더 아래 브랜치만 바뀐 경우·설정대로 한 fetch와 push가 슬롯에 닿지 못함·다른 실행의 잠금과 gc 중인 슬롯·오래된 임시 파일·실행 중에 gc가 시작된 슬롯과 보기용 저장소의 훅·origin 강제 푸시·보기용 쪽이 앞선 origin과 shallow 슬롯에서 채우기·등록부 변경과 사람이 더한 원격·슬롯 폴더인 origin·슬롯 안의 `root`), `mcp`(프로토콜·임대 흐름), `phase2`(MCP 안내 문구·시간·annotations·status 요약·수용량 경고·시작 단계, 아직 코어에 없는 개선은 SKIP), `prepare`(origin에서 기준 클론·첫 열기·에이전트 클론 2개, 다시 돌리기, 끊긴 실행 이어 가기, 남이 연 에디터·플랫폼 전환 거부). 그룹은 따로 프로세스에서 3개씩 함께 돌고, 그룹 안의 시험은 차례로 돕니다.
 - **결과.** 시험마다 PASS·FAIL·KNOWN·SKIP과 시간을 찍고, FAIL이 없으면 exit 0입니다. KNOWN은 [tests/FINDINGS.md](tests/FINDINGS.md)에 적은 코어 문제의 재현 시험입니다. 모두 통과하면 시험 폴더를 지우고, 아니면 남깁니다(`envs\<그룹>\cli.log`에 모든 실행의 출력이 있습니다).
+- **실제 저장소와 대조.** `tests\tools\compare-dashboard-git.ps1`은 실제 등록부로 `dashboard -Json -Git full`을 두 번 돌리고, 그 사이에 코어와 다른 git 명령(`rev-list --count`, `rev-list --left-right`, `merge-base --is-ancestor`, `stash list`, `status --porcelain=v1`, `worktree list` 등, 모두 `--no-optional-locks`)으로 같은 값을 구해 견줍니다. 두 번의 대시보드 어느 쪽과도 다른 값만 차이로 셉니다(작업 중인 슬롯은 계속 바뀝니다). `-Baseline <다른 unity-slot.ps1>`이면 두 코어의 대시보드 시간을 번갈아 잽니다. 읽기만 합니다.
 - **지키는 것.** 스텁도 죽이지 않습니다. 시험은 제어 파일로 스텁이 스스로 끝나게 하고, 끝나지 않은 스텁은 보고만 합니다(10분 뒤 스스로 끝납니다). 대화상자는 누르지 않고 목록만 봅니다. 스텁 창은 화면 밖에 포커스를 뺏지 않고 뜨며, 소리를 내지 않습니다.
 - **앱 패키지 셸.** MSIX로 설치한 앱의 셸은 AppData 쓰기가 앱 전용 폴더로 가서, WMI로 뜬 스텁이 그 파일을 보지 못합니다. 그런 셸에서 시험 폴더가 AppData 아래면 시작하지 않으니 `-Root`로 다른 폴더를 주세요.
 
