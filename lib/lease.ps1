@@ -4,6 +4,10 @@
 # the lock, so two sessions cannot take the same free slot. A lease expires after -Hours (default 8);
 # an expired lease no longer blocks a closed slot, but it still blocks a slot whose editor is open
 # (someone may be looking at it), which needs the user. Nothing here closes editors on a timer.
+#
+# A batch lease (acquire -Batch) is for a batchmode run of the caller: only a closed slot qualifies (no
+# editor, Temp\UnityLockfile not held), no editor is opened, and open refuses the clone for other owners
+# until the lease is released, so nobody opens an editor between the lease and the start of the run.
 
 function Get-LeaseDir { return (Join-Path (Get-SlotHome) 'leases') }
 
@@ -100,7 +104,7 @@ function Get-SlotLease([string]$SlotName) {
     }
     if ($null -eq $d) {
         return [pscustomobject]@{ owner = '(unreadable lease file)'; acquiredAt = $null; expiresAt = $null; need = ''; nonce = ''; editorPid = 0; openedByAcquire = $false; host = ''
-            clientName = ''; clientPid = 0; clientStartedAt = $null; Expired = $true }
+            clientName = ''; clientPid = 0; clientStartedAt = $null; batch = $false; Expired = $true }
     }
     $exp = $null
     $e = [string](Get-Prop $d 'expiresAt')
@@ -124,8 +128,27 @@ function Get-SlotLease([string]$SlotName) {
         clientName      = [string](Get-Prop $c 'name')
         clientPid       = [int](Get-Prop $c 'pid')
         clientStartedAt = $cStarted
+        batch           = [bool](Get-Prop $d 'batch')
         Expired         = ($null -eq $exp -or (Get-Date) -gt $exp)
     }
+}
+
+# A current batch lease of another owner on this clone, else $null (open refuses the clone then).
+function Get-ForeignBatchLease([string]$Clone) {
+    $slot = $null
+    try { $slot = Find-Slot (Read-Registry) $Clone } catch { return $null }
+    if ($null -eq $slot) { return $null }
+    $lease = Get-SlotLease $slot.name
+    if ($null -eq $lease -or -not $lease.batch -or $lease.Expired) { return $null }
+    if ($lease.owner -eq (Resolve-Owner)) { return $null }
+    return $lease
+}
+
+# acquire -Batch: a batchmode run needs the clone closed. '' when it is, otherwise why not.
+function Get-BatchBusyReason($Slot, $St) {
+    if ($St.EditorPid -gt 0) { return ('editor open (pid {0}); a batchmode run needs the clone closed' -f $St.EditorPid) }
+    if ((Get-LockState $Slot.path) -eq 'held') { return 'Temp\UnityLockfile is held by some process' }
+    return ''
 }
 
 function ConvertTo-LeaseJson($SlotName, $Lease) {
@@ -138,6 +161,7 @@ function ConvertTo-LeaseJson($SlotName, $Lease) {
         nonce           = $Lease.nonce
         editorPid       = [int]$Lease.editorPid
         openedByAcquire = [bool]$Lease.openedByAcquire
+        batch           = [bool](Get-Prop $Lease 'batch')
         host            = $env:COMPUTERNAME
         client          = $null
     }
@@ -154,14 +178,14 @@ function ConvertTo-LeaseJson($SlotName, $Lease) {
 # An expired lease: the file is opened without sharing and replaced only while it still holds the
 # expired lease this process saw ($ExpectedNonce, its nonce) and that lease is still expired, so two
 # processes that saw the same expired lease cannot both take it over (tests\FINDINGS.md F4).
-function New-SlotLease($Slot, [string]$OwnerId, [string]$Need, [double]$HoursValue, [bool]$ReplaceExpired, $Client = $null, [string]$ExpectedNonce = '') {
+function New-SlotLease($Slot, [string]$OwnerId, [string]$Need, [double]$HoursValue, [bool]$ReplaceExpired, $Client = $null, [string]$ExpectedNonce = '', [bool]$BatchLease = $false) {
     $dir = Get-LeaseDir
     if (-not (Test-Path -LiteralPath $dir)) { [void](New-Item -ItemType Directory -Path $dir -Force) }
     $now = Get-Date
     $lease = [pscustomobject]@{
         owner = $OwnerId; acquiredAt = $now; expiresAt = $now.AddHours($HoursValue); need = $Need
         nonce = [guid]::NewGuid().ToString('N'); editorPid = 0; openedByAcquire = $false; host = $env:COMPUTERNAME
-        clientName = ''; clientPid = 0; clientStartedAt = $null; Expired = $false
+        clientName = ''; clientPid = 0; clientStartedAt = $null; batch = $BatchLease; Expired = $false
     }
     if ($null -ne $Client) { $lease.clientName = $Client.Name; $lease.clientPid = $Client.Pid; $lease.clientStartedAt = $Client.StartedAt }
     $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes((ConvertTo-LeaseJson $Slot.name $lease))
@@ -320,7 +344,7 @@ function Get-BusyReason($Slot, $St, [string]$OwnerId) {
 }
 
 function Invoke-Acquire {
-    if ([string]::IsNullOrWhiteSpace($Target)) { throw 'usage: unity-slot acquire <purpose or platform> [-Project <repo>] [-Owner <id>] [-Hours 8] [-NoOpen]' }
+    if ([string]::IsNullOrWhiteSpace($Target)) { throw 'usage: unity-slot acquire <purpose, platform or slot> [-Project <repo>] [-Owner <id>] [-Hours 8] [-NoOpen | -NoWait | -Batch]' }
     $need = $Target.Trim()
     $ownerId = Resolve-Owner
     $projectFilter = Get-ProjectFilter
@@ -331,7 +355,19 @@ function Invoke-Acquire {
     }
     $snap = Get-Snapshot
 
-    $matched = @($reg.slots | Where-Object { $_.agentUse -and (Test-SlotNeed $_ $need) -and (Test-SlotProject $_ $projectFilter) })
+    # A slot name leases that slot only (for a caller that already chose the clone, e.g. by its branch).
+    $named = Find-SlotByName $reg $need
+    if ($null -ne $named) {
+        $matched = @(@($named) | Where-Object { $_.agentUse -and (Test-SlotProject $_ $projectFilter) })
+        if ($matched.Count -eq 0) {
+            if (-not $named.agentUse) { Say ('NO SLOT: {0} is not an agent slot (agentUse false).' -f $named.name) }
+            else { Say ('NO SLOT: {0} belongs to {1}, not {2}.' -f $named.name, $named.project, $projectFilter) }
+            $script:ExitCode = 5
+            return
+        }
+    } else {
+        $matched = @($reg.slots | Where-Object { $_.agentUse -and (Test-SlotNeed $_ $need) -and (Test-SlotProject $_ $projectFilter) })
+    }
     if ($matched.Count -eq 0) {
         Say ('NO SLOT: no agent slot has purpose or platform "{0}"{1}.' -f $need, $(if ($projectFilter) { ' in ' + $projectFilter } else { '' }))
         if (Test-ViaMcp) { Say ('see: status()   new clone plan: {0}' -f (Format-ToolCall 'create' @('purpose', $need, 'project', $projectFilter))) }
@@ -350,6 +386,7 @@ function Invoke-Acquire {
     foreach ($s in $matched) {
         $st = Get-SlotState $s $snap
         $reason = Get-BusyReason $s $st $ownerId
+        if (-not $reason -and $Batch) { $reason = Get-BatchBusyReason $s $st }
         $rows.Add(@($s.name, $s.platform, $s.mode, $st.Text, (Format-Lease $st.Lease), $(if ($reason) { $reason } else { 'free' })))
         if (-not $reason) {
             # own lease first, then open hot slots (no start-up wait), then closed slots used most recently
@@ -375,6 +412,7 @@ function Invoke-Acquire {
         $existing = $c.State.Lease
         if ($null -ne $existing -and $existing.owner -eq $ownerId) {
             $existing.expiresAt = (Get-Date).AddHours((Get-LeaseHours))
+            if ($Batch) { $existing.batch = $true }
             if ($null -ne $client) { $existing.clientName = $client.Name; $existing.clientPid = $client.Pid; $existing.clientStartedAt = $client.StartedAt }
             Update-SlotLease $c.Slot.name $existing
             $chosen = $c; $lease = $existing
@@ -386,14 +424,16 @@ function Invoke-Acquire {
         $replace = ($null -ne $existing -and $existing.Expired)
         $seenNonce = ''
         if ($replace) { $seenNonce = [string]$existing.nonce }
-        $lease = New-SlotLease $c.Slot $ownerId $need (Get-LeaseHours) $replace $client $seenNonce
+        $lease = New-SlotLease $c.Slot $ownerId $need (Get-LeaseHours) $replace $client $seenNonce ([bool]$Batch)
         if ($null -ne $lease) {
             $chosen = $c
             if ($replace) {
                 Say ('lease   replaced the expired lease of {0}' -f $existing.owner)
                 Write-SlotEvent 'takeover' $c.Slot.path $c.State.EditorPid ([ordered]@{ previousOwner = $existing.owner; previousExpiresAt = (Format-Iso $existing.expiresAt) }) $ownerId
             }
-            Write-SlotEvent 'acquire' $c.Slot.path $c.State.EditorPid ([ordered]@{ need = $need; hours = (Get-LeaseHours); expiresAt = (Format-Iso $lease.expiresAt) }) $ownerId
+            $acqDetail = [ordered]@{ need = $need; hours = (Get-LeaseHours); expiresAt = (Format-Iso $lease.expiresAt) }
+            if ($Batch) { $acqDetail.batch = $true }
+            Write-SlotEvent 'acquire' $c.Slot.path $c.State.EditorPid $acqDetail $ownerId
             break
         }
         Say ('lease   {0} was taken a moment ago, trying the next slot' -f $c.Slot.name)
@@ -408,7 +448,7 @@ function Invoke-Acquire {
     Say ('lease   {0} until {1}' -f $lease.owner, (Format-Time $lease.expiresAt))
 
     $editorPid = $chosen.State.EditorPid
-    if ($editorPid -eq 0 -and -not $NoOpen) {
+    if ($editorPid -eq 0 -and -not $NoOpen -and -not $Batch) {
         $script:LastOpenPid = 0
         Invoke-Open $slot.path $TimeoutSec '' $NoWait.IsPresent
         if ($script:ExitCode -ne 0) {
@@ -429,6 +469,7 @@ function Invoke-Acquire {
     $mcp = Test-ViaMcp
     $state = 'closed (-NoOpen)'
     if ($mcp) { $state = 'closed (open=false)' }
+    if ($Batch) { $state = 'closed (-Batch)' }
     if ($editorPid -gt 0) { $state = 'editor pid ' + $editorPid }
     $starting = ($NoWait -and $lease.openedByAcquire)
     if ($starting) {
@@ -436,7 +477,11 @@ function Invoke-Acquire {
         else { $state += ' starting (run: unity-slot wait ' + $slot.name + ')' }
     }
     Say ('ACQUIRED {0}: {1}; work in {2}' -f $slot.name, $state, $slot.path)
-    $releaseCall = Format-ToolCall 'release' @('slot', $slot.name, 'owner', (Get-OwnerArg $lease.owner))
+    if ($Batch) {
+        Say ('next    run the batchmode Unity on {0}; open refuses this clone for other owners until the release; after the run has exited: unity-slot release {1} -Owner {2}' -f $slot.path, $slot.name, $lease.owner)
+        return
+    }
+    $releaseCall =Format-ToolCall 'release' @('slot', $slot.name, 'owner', (Get-OwnerArg $lease.owner))
     Say (Format-PinLine $slot.path)
     if ($mcp -and $starting) {
         Say ('next    while it starts, do the work that needs no editor (read code, research, plan; no Unity asset or script edits yet); when you need the editor: {0}, then check with your Unity MCP that Application.dataPath is "{1}/Assets"; when done: {2}' -f (Format-ToolCall 'wait_ready' @('slot', $slot.name)), $slot.path.Replace('\', '/'), $releaseCall)

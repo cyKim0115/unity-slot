@@ -11,7 +11,7 @@ Open and close Unity editors for clone folders on demand, and show what is open.
   unity-slot.ps1 summary   [<slot>] [-Project <repo>]
   unity-slot.ps1 scan      [-Project <owner/repo>[,...]] [-ScanRoot <dir>[,...]] [-Apply]
   unity-slot.ps1 set       <slot> [-Purpose a,b] [-Mode hot|ondemand] [-AgentUse true|false] [-Memo <text>]
-  unity-slot.ps1 acquire   <purpose|platform> [-Project <repo>] [-Owner <id>] [-Hours 8] [-NoOpen | -NoWait]
+  unity-slot.ps1 acquire   <purpose|platform|slot> [-Project <repo>] [-Owner <id>] [-Hours 8] [-NoOpen | -NoWait | -Batch]
   unity-slot.ps1 release   <slot> [-Owner <id>] [-KeepOpen] [-AnyOwner]
   unity-slot.ps1 release   [<slot>] -Stale
   unity-slot.ps1 renew     <slot> [-Owner <id>] [-Hours 8]
@@ -42,6 +42,9 @@ summary   One short table (slot, platform, mode, state, lease, agent use) and th
 scan      Detects version, branch, platform of clones under the scan roots and updates the registry.
 set       Changes the user fields of a slot (purposes, mode, agent use, memo).
 acquire   Leases a free slot that fits, then opens its editor (lib\lease.ps1). Exit 5: none free.
+          A slot name leases that slot only. -Batch leases a closed slot for a batchmode run: no
+          editor is opened, slots with an open editor or a held Temp\UnityLockfile are not free, and
+          open refuses that clone for other owners until the lease is released.
 release   Closes the editor of an on-demand slot and drops the lease. Only the lease owner.
           -Stale drops a stale lease of any owner and never touches an editor: the slot is closed
           and the lease expired or its client process has exited. Without a slot, every stale lease.
@@ -86,8 +89,8 @@ Rules kept here (README.md has the reasons):
   - ASCII-only source: Windows PowerShell 5.1 reads BOM-less files with the ANSI code page.
 
 Exit codes: 0 ok, 1 error, 2 timed out (editor left running), 3 editor version not installed,
-            4 refused (lock held, a beforeClose hook, batchmode run, lease of someone else,
-              platform switch, new-clone check failed, another branch-view run), 5 no free slot,
+            4 refused (lock held, a beforeClose hook, batchmode run or batch lease, lease of someone
+              else, platform switch, new-clone check failed, another branch-view run), 5 no free slot,
             6 still starting (wait).
 #>
 [CmdletBinding()]
@@ -130,6 +133,8 @@ param(
     # lease length; default: config "leaseHours" (8)
     [double]$Hours = 8,
     [switch]$NoOpen,
+    # acquire: lease a closed slot for a batchmode run (implies -NoOpen; open refuses it for other owners)
+    [switch]$Batch,
     # open, acquire: return right after launching; then call wait until READY (MCP tools stay short)
     [switch]$NoWait,
     [switch]$KeepOpen,
@@ -169,7 +174,7 @@ param(
     [switch]$Apply
 )
 
-$script:UnitySlotVersion = '0.7.0'
+$script:UnitySlotVersion = '0.8.0'
 $script:ExitCode = 0
 $script:LastOpenPid = 0
 $script:LastStartupPhase = $null
@@ -878,6 +883,14 @@ function Invoke-Open([string]$ClonePath, [int]$Timeout = 0, [string]$BuildTarget
     if ($batch.Count -gt 0) {
         Say ('BUSY: batchmode Unity pid {0} is using this clone. Wait until it quits.' -f (($batch | ForEach-Object { $_.Pid }) -join ', '))
         Write-SlotEvent 'refused' $clone $batch[0].Pid ([ordered]@{ command = 'open'; reason = 'batchmode run' })
+        $script:ExitCode = 4
+        return
+    }
+    # A batch lease keeps the clone closed for a batchmode run that may not have started yet.
+    $batchLease = Get-ForeignBatchLease $clone
+    if ($open.Count -eq 0 -and $null -ne $batchLease) {
+        Say ('BUSY: leased for a batchmode run by {0}. An editor now would make that run fail. Wait until the lease is released.' -f (Format-Lease $batchLease))
+        Write-SlotEvent 'refused' $clone 0 ([ordered]@{ command = 'open'; reason = 'batch lease'; leaseOwner = $batchLease.owner })
         $script:ExitCode = 4
         return
     }

@@ -862,7 +862,7 @@ function Invoke-Dashboard {
         $l = Get-SlotLease $s.name
         if ($null -ne $l) {
             $lease = [ordered]@{ owner = $l.owner; need = $l.need; acquiredAt = (Format-Iso $l.acquiredAt); expiresAt = (Format-Iso $l.expiresAt)
-                expired = [bool]$l.Expired; openedByAcquire = [bool]$l.openedByAcquire; host = $l.host; client = $null }
+                expired = [bool]$l.Expired; openedByAcquire = [bool]$l.openedByAcquire; batch = [bool]$l.batch; host = $l.host; client = $null }
             # MCP leases record the client process (Claude Code, Codex, Cursor); gone = orphaned lease
             $alive = Test-LeaseClientAlive $l $snap
             if ($null -ne $alive) {

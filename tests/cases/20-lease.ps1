@@ -328,3 +328,75 @@ Add-Test -Name 'lease.editor-exits-before-ready' -Group 'lease' -Body {
     Assert-Like $o '^\[open\] READY pid \d+'
     Assert-Exit (Invoke-SlotCli $E @('close', 'MyGame-Web')) 0
 }
+
+# acquire <slot> -Batch (0.8.0): a closed slot leased for a batchmode run. Nothing opens, the lease says batch,
+# open refuses that clone for other owners until the release, and a purpose picks only closed slots.
+Add-Test -Name 'lease.batch-by-slot-name' -Group 'lease' -Body {
+    param($E)
+    $n0 = Get-EventCount $E
+    $r = Invoke-SlotCli $E @('acquire', 'MyGame-2', '-Batch', '-Project', 'mygame', '-Owner', 'bo')
+    Assert-Exit $r 0
+    Assert-Like $r '^\[acquire\] ACQUIRED MyGame-2: closed \(-Batch\); work in '
+    Assert-Has $r ('[acquire] next    run the batchmode Unity on {0}; open refuses this clone for other owners until the release; after the run has exited: unity-slot release MyGame-2 -Owner bo' -f $E.Clones['MyGame-2'])
+    Assert-HasNot $r '[acquire] pin' 'no pin line for a batch lease'
+    $lease = Get-Lease $E 'MyGame-2'
+    Assert-Equal $lease.owner 'bo' 'lease owner'
+    Assert-True ([bool]$lease.batch) 'lease batch'
+    Assert-Equal $lease.need 'MyGame-2' 'lease need'
+    Assert-True (@(Get-StubProcs $E.Clones['MyGame-2']).Count -eq 0) 'nothing opened'
+
+    $o = Invoke-SlotCli $E @('open', 'MyGame-2', '-Owner', 'other')
+    Assert-Exit $o 4
+    Assert-Like $o '^\[open\] BUSY: leased for a batchmode run by bo until .+\. An editor now would make that run fail\. Wait until the lease is released\.'
+    Assert-True (@(Get-StubProcs $E.Clones['MyGame-2']).Count -eq 0) 'open refused: nothing started'
+
+    # a purpose skips the leased slot and takes the other closed one
+    $a = Invoke-SlotCli $E @('acquire', 'agent', '-Batch', '-Project', 'mygame', '-Owner', 'cy')
+    Assert-Exit $a 0
+    Assert-Like $a '^\[acquire\] ACQUIRED MyGame-1: closed \(-Batch\); work in '
+    $again = Invoke-SlotCli $E @('acquire', 'MyGame-2', '-Batch', '-Project', 'mygame', '-Owner', 'cy')
+    Assert-Exit $again 5
+    Assert-Like $again '^MyGame-2 .*leased by bo until '
+
+    foreach ($rel in @(@('MyGame-2', 'bo'), @('MyGame-1', 'cy'))) {
+        $x = Invoke-SlotCli $E @('release', $rel[0], '-Owner', $rel[1])
+        Assert-Exit $x 0
+        Assert-Has $x ('[release] RELEASED {0}' -f $rel[0])
+        Assert-True ($null -eq (Get-Lease $E $rel[0])) ('lease removed: ' + $rel[0])
+    }
+    $ev = @(Get-NewEvents $E $n0)
+    $acq = @($ev | Where-Object { $_.event -eq 'acquire' })
+    Assert-Equal $acq.Count 2 'acquire events'
+    foreach ($e1 in $acq) { Assert-True ([bool]$e1.detail.batch) ('acquire event batch: ' + $e1.slot) }
+    $ref = @($ev | Where-Object { $_.event -eq 'refused' -and $_.detail.command -eq 'open' })
+    Assert-Equal (($ref | ForEach-Object { $_.detail.reason + ':' + $_.detail.leaseOwner }) -join ',') 'batch lease:bo' 'refused open event'
+    Assert-Equal (@($ev | Where-Object { $_.event -eq 'open' }).Count) 0 'no open events'
+}
+
+Add-Test -Name 'lease.batch-needs-closed-slot' -Group 'lease' -Body {
+    param($E)
+    $m = Invoke-SlotCli $E @('acquire', 'MyGame', '-Batch', '-Project', 'mygame', '-Owner', 'zed')
+    Assert-Exit $m 5
+    Assert-Has $m '[acquire] NO SLOT: MyGame is not an agent slot (agentUse false).'
+    Set-StubControl $E.Clones['MyGame-1'] @{ mode = 'normal'; readyMs = '500' } -Reset
+    Assert-Exit (Invoke-SlotCli $E @('set', 'MyGame-1', '-Mode', 'hot')) 0
+    try {
+        $op = Invoke-SlotCli $E @('open', 'MyGame-1')
+        Assert-Exit $op 0
+        $pid1 = [int](Get-Match $op.Out '^\[open\] READY pid (\d+)')
+        # an open hot slot is free for a normal acquire, not for a batch run
+        $b = Invoke-SlotCli $E @('acquire', 'MyGame-1', '-Batch', '-Project', 'mygame', '-Owner', 'yu')
+        Assert-Exit $b 5
+        Assert-Like $b ('^MyGame-1 .*editor open \(pid {0}\); a batchmode run needs the clone closed' -f $pid1)
+        Assert-True ($null -eq (Get-Lease $E 'MyGame-1')) 'no lease on the open slot'
+        $p = Invoke-SlotCli $E @('acquire', 'android', '-Batch', '-Project', 'mygame', '-Owner', 'yu')
+        Assert-Exit $p 0
+        Assert-Like $p '^\[acquire\] ACQUIRED MyGame-2: closed \(-Batch\); work in '
+        Assert-Exit (Invoke-SlotCli $E @('release', 'MyGame-2', '-Owner', 'yu')) 0
+        Assert-True (Test-ProcAlive $pid1) 'the open hot slot was left alone'
+    } finally {
+        [void](Invoke-SlotCli $E @('set', 'MyGame-1', '-Mode', 'ondemand'))
+    }
+    $cl = Invoke-SlotCli $E @('close', 'MyGame-1')
+    Assert-Exit $cl 0
+}
